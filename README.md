@@ -44,8 +44,3 @@ git push -u origin codex/salesforce-draft-guard
 
 - Options page for choosing which Salesforce actions clear drafts and which field keywords should be protected.
 - Popup panel for reviewing saved drafts in the current browser session and clearing one or all drafts manually.
-
-## Next hardening steps
-
-- Capture richer Salesforce-specific selectors after testing in your org.
-- Add automated tests for key generation, restore rules, and clear heuristics.

@@ -4,8 +4,9 @@ const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
 
 const draftCache = new Map();
-const pendingActions = new Map();
+const pendingActions = [];
 const saveTimers = new WeakMap();
+const storageArea = chrome.storage.session || chrome.storage.local;
 
 let observerStarted = false;
 let toastNode;
@@ -89,16 +90,23 @@ function handleClickEvent(event) {
   }
 
   const actionLabel = normalizeWhitespace(button.textContent || "");
-  if (!/^(send|share|save|post|log a call)$/i.test(actionLabel)) {
+  if (!isSubmitAction(actionLabel)) {
     return;
   }
 
   const container = getContainer(button);
-  const scope = getContainerScope(container);
-  pendingActions.set(scope, {
+  const draftKeys = getDraftKeysForContainer(container);
+  if (!draftKeys.length) {
+    return;
+  }
+
+  pendingActions.unshift({
     actionLabel,
+    draftKeys,
     startedAt: Date.now()
   });
+
+  prunePendingActions();
 }
 
 function handleWindowMessage(event) {
@@ -106,28 +114,20 @@ function handleWindowMessage(event) {
     return;
   }
 
-  const now = Date.now();
-  const matchedScopes = [];
+  prunePendingActions();
 
-  for (const [scope, pending] of pendingActions.entries()) {
-    if (now - pending.startedAt > PENDING_ACTION_TTL_MS) {
-      pendingActions.delete(scope);
-      continue;
-    }
-
-    matchedScopes.push(scope);
+  const pendingAction = pendingActions.shift();
+  if (!pendingAction) {
+    return;
   }
 
-  Promise.all(
-    matchedScopes.map(async (scope) => {
-      await clearScopeDrafts(scope);
-      pendingActions.delete(scope);
-    })
-  ).then(() => {
-    if (matchedScopes.length) {
+  clearDraftKeys(pendingAction.draftKeys)
+    .then(() => {
       showToast("Draft cleared after successful Salesforce save.");
-    }
-  });
+    })
+    .catch((error) => {
+      console.error("Salesforce Draft Guard failed to clear saved drafts.", error);
+    });
 }
 
 function scheduleSave(element) {
@@ -153,7 +153,7 @@ async function persistDraft(element) {
   }
 
   if (!value.trim()) {
-    await chrome.storage.local.remove(meta.storageKey);
+    await removeStorageKeys([meta.storageKey]);
     draftCache.delete(meta.storageKey);
     return;
   }
@@ -163,11 +163,12 @@ async function persistDraft(element) {
     updatedAt: Date.now(),
     url: location.href,
     title: document.title,
-    scope: meta.scope
+    scope: meta.scope,
+    fieldKey: meta.fieldKey
   };
 
   draftCache.set(meta.storageKey, draft);
-  await chrome.storage.local.set({
+  await storageArea.set({
     [meta.storageKey]: draft
   });
   showToast("Draft saved locally.");
@@ -201,7 +202,7 @@ async function restoreDraft(element) {
 
   let draft = draftCache.get(meta.storageKey);
   if (!draft) {
-    const result = await chrome.storage.local.get(meta.storageKey);
+    const result = await storageArea.get(meta.storageKey);
     draft = result[meta.storageKey];
     if (draft) {
       draftCache.set(meta.storageKey, draft);
@@ -217,30 +218,21 @@ async function restoreDraft(element) {
   showToast("Recovered a local draft.");
 }
 
-async function clearScopeDrafts(scope) {
-  const keys = [];
-
-  draftCache.forEach((draft, storageKey) => {
-    if (draft.scope === scope) {
-      keys.push(storageKey);
-    }
-  });
-
-  if (!keys.length) {
-    const allDrafts = await chrome.storage.local.get(null);
-    Object.entries(allDrafts).forEach(([storageKey, draft]) => {
-      if (storageKey.startsWith(STORAGE_PREFIX) && draft && draft.scope === scope) {
-        keys.push(storageKey);
-      }
-    });
-  }
-
-  if (!keys.length) {
+async function clearDraftKeys(storageKeys) {
+  if (!storageKeys.length) {
     return;
   }
 
-  keys.forEach((key) => draftCache.delete(key));
-  await chrome.storage.local.remove(keys);
+  storageKeys.forEach((key) => draftCache.delete(key));
+  await removeStorageKeys(storageKeys);
+}
+
+function getDraftKeysForContainer(container) {
+  return Array.from(container.querySelectorAll("textarea, input[type='text'], [contenteditable], [contenteditable='true']"))
+    .filter((element) => isDraftCandidate(element))
+    .map((element) => getDraftMetadata(element))
+    .filter(Boolean)
+    .map((meta) => meta.storageKey);
 }
 
 function getDraftMetadata(element) {
@@ -250,7 +242,7 @@ function getDraftMetadata(element) {
 
   const container = getContainer(element);
   const scope = getContainerScope(container);
-  const fieldKey = getFieldKey(element);
+  const fieldKey = getFieldKey(element, container);
 
   return {
     scope,
@@ -268,28 +260,47 @@ function getContainer(element) {
 }
 
 function getContainerScope(container) {
-  const pageKey = `${location.origin}${location.pathname}`;
+  const recordId =
+    findRecordId(container) ||
+    findRecordId(document.body) ||
+    normalizeWhitespace(location.pathname + location.search);
+  const actionType = getContainerActionType(container);
   const heading =
     findText(container, "h1, h2, h3, [role='heading'], .title, .slds-text-heading_small") ||
     container.getAttribute("aria-label") ||
-    container.getAttribute("data-aura-class") ||
     "";
-  const buttons = Array.from(container.querySelectorAll("button, [role='button']"))
-    .map((node) => normalizeWhitespace(node.textContent || ""))
-    .filter(Boolean)
-    .slice(0, 6)
-    .join("|");
 
-  return hashKey(`${pageKey}::${heading}::${buttons}`);
+  return hashKey(`${recordId}::${actionType}::${heading}`);
 }
 
-function getFieldKey(element) {
+function getFieldKey(element, container) {
   const label = getElementLabel(element);
-  const placeholder = element.getAttribute("placeholder") || "";
-  const name = element.getAttribute("name") || "";
-  const classes = element.className || "";
-  const path = getDomPath(element);
-  return hashKey(`${label}::${placeholder}::${name}::${classes}::${path}`);
+  const placeholder = normalizeWhitespace(element.getAttribute("placeholder") || "");
+  const name = normalizeWhitespace(element.getAttribute("name") || "");
+  const title = normalizeWhitespace(element.getAttribute("title") || "");
+  const inputRole = inferFieldRole(element, container);
+  const fieldPosition = getCandidateIndex(element, container);
+
+  return hashKey(`${inputRole}::${label}::${placeholder}::${name}::${title}::${fieldPosition}`);
+}
+
+function getContainerActionType(container) {
+  const text = normalizeWhitespace(container.textContent || "").toLowerCase();
+
+  if (text.includes("log a call")) {
+    return "log-a-call";
+  }
+  if (text.includes("email")) {
+    return "email";
+  }
+  if (text.includes("post")) {
+    return "post";
+  }
+  if (text.includes("note")) {
+    return "note";
+  }
+
+  return "activity";
 }
 
 function getElementLabel(element) {
@@ -314,19 +325,67 @@ function getElementLabel(element) {
   );
 }
 
-function getDomPath(element) {
-  const segments = [];
-  let current = element;
+function inferFieldRole(element, container) {
+  const semanticText = normalizeWhitespace(
+    [
+      getElementLabel(element),
+      element.getAttribute("name") || "",
+      element.getAttribute("placeholder") || "",
+      element.getAttribute("title") || "",
+      container.textContent || ""
+    ].join(" ")
+  ).toLowerCase();
 
-  while (current && current !== document.body && segments.length < 5) {
-    const tag = current.tagName.toLowerCase();
-    const role = current.getAttribute("role");
-    const testId = current.getAttribute("data-id");
-    segments.unshift([tag, role, testId].filter(Boolean).join("."));
-    current = current.parentElement;
+  if (semanticText.includes("subject")) {
+    return "subject";
+  }
+  if (semanticText.includes("description")) {
+    return "description";
+  }
+  if (semanticText.includes("comment")) {
+    return "comment";
+  }
+  if (semanticText.includes("message")) {
+    return "message";
+  }
+  if (semanticText.includes("body")) {
+    return "body";
+  }
+  if (semanticText.includes("note")) {
+    return "note";
   }
 
-  return segments.join(">");
+  return "draft";
+}
+
+function getCandidateIndex(element, container) {
+  const candidates = Array.from(
+    container.querySelectorAll("textarea, input[type='text'], [contenteditable], [contenteditable='true']")
+  ).filter((candidate) => isDraftCandidate(candidate));
+  return String(Math.max(candidates.indexOf(element), 0));
+}
+
+function findRecordId(root) {
+  if (!(root instanceof Element || root instanceof Document)) {
+    return "";
+  }
+
+  const urlMatch = location.pathname.match(/\/([a-zA-Z0-9]{15,18})(?:\/|$)/);
+  if (urlMatch) {
+    return urlMatch[1];
+  }
+
+  const recordNode = root.querySelector("[data-recordid], [data-record-id], [data-id]");
+  if (!recordNode) {
+    return "";
+  }
+
+  return normalizeWhitespace(
+    recordNode.getAttribute("data-recordid") ||
+      recordNode.getAttribute("data-record-id") ||
+      recordNode.getAttribute("data-id") ||
+      ""
+  );
 }
 
 function readElementValue(element) {
@@ -400,6 +459,27 @@ function dispatchSyntheticInput(element) {
 function findText(root, selector) {
   const match = root.querySelector(selector);
   return match ? normalizeWhitespace(match.textContent || "") : "";
+}
+
+function isSubmitAction(actionLabel) {
+  return /^(send|share|save|post|log a call)$/i.test(actionLabel);
+}
+
+function prunePendingActions() {
+  const now = Date.now();
+  for (let index = pendingActions.length - 1; index >= 0; index -= 1) {
+    if (now - pendingActions[index].startedAt > PENDING_ACTION_TTL_MS) {
+      pendingActions.splice(index, 1);
+    }
+  }
+}
+
+async function removeStorageKeys(keys) {
+  if (!keys.length) {
+    return;
+  }
+
+  await storageArea.remove(keys);
 }
 
 function normalizeWhitespace(value) {

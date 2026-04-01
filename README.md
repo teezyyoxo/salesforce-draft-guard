@@ -5,7 +5,7 @@ Chrome extension that protects Salesforce activity drafts from accidental refres
 ## What it does
 
 - Watches Salesforce text-entry surfaces such as Email, Post, Log a Call, notes, and similar composer fields.
-- Saves typed content locally while the user is editing.
+- Saves typed content in extension session storage while the browser session is active.
 - Restores the draft when Salesforce rerenders the form, reloads a frame, or the page is refreshed.
 - Clears the local draft after a likely successful Salesforce save/send request.
 
@@ -14,8 +14,9 @@ Chrome extension that protects Salesforce activity drafts from accidental refres
 This first version uses heuristics because Salesforce Lightning markup and request flows vary by org and feature:
 
 - It watches `textarea`, text `input`, and `contenteditable` fields that appear related to messages, posts, calls, notes, or descriptions.
-- It marks a composer as pending-clear when the user clicks `Send`, `Share`, `Save`, `Post`, or `Log a Call`.
-- It clears saved drafts when Salesforce then issues a successful related `POST`, `PUT`, or `PATCH` request.
+- It derives draft keys from more stable Salesforce signals such as record id, action type, field semantics, and field position.
+- It marks the active composer as pending-clear when the user clicks `Send`, `Share`, `Save`, `Post`, or `Log a Call`.
+- It clears only the draft keys captured from that composer when Salesforce then issues a successful related `POST`, `PUT`, or `PATCH` request.
 
 That is intentionally conservative, but not perfect. Expect some tuning against your specific Salesforce UI.
 
@@ -24,11 +25,11 @@ That is intentionally conservative, but not perfect. Expect some tuning against 
 1. Open `chrome://extensions`.
 2. Enable `Developer mode`.
 3. Click `Load unpacked`.
-4. Select this folder: `/Users/mgray/Documents/New project`.
+4. Select this folder: `/Users/mgray/GitHub/SFsaver`.
 
 ## Suggested Git setup
 
-Once terminal execution is available, initialize and connect the repo:
+Initialize and connect the repo:
 
 ```bash
 git init

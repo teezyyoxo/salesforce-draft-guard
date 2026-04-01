@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.0] - 2026-04-01
+
+### Added
+- Added an extension options page for configuring protected Salesforce actions, protected field keywords, and toast visibility.
+- Added an action popup for reviewing saved drafts in the current browser session and clearing individual or all drafts manually.
+
+### Changed
+- Updated `content.js` to load settings from extension storage and apply them to draft detection and submit-action clearing.
+- Updated `manifest.json` to register the popup and options page.
+- Updated `README.md` to document the new configuration and draft inspection features.
+
 ## [0.1.1] - 2026-04-01
 
 ### Changed

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Salesforce Draft Guard</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup-header">
+        <div>
+          <p class="eyebrow">Salesforce Draft Guard</p>
+          <h1>Saved Drafts</h1>
+        </div>
+        <button id="openOptions" class="link-button" type="button">Options</button>
+      </header>
+
+      <section class="toolbar">
+        <button id="refresh" class="button button-secondary" type="button">Refresh</button>
+        <button id="clearAll" class="button" type="button">Clear All</button>
+      </section>
+
+      <p id="summary" class="summary"></p>
+      <section id="drafts" class="drafts" aria-live="polite"></section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

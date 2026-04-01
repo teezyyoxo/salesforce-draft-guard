@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Salesforce Draft Guard Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <p class="eyebrow">Salesforce Draft Guard</p>
+        <h1>Protection Settings</h1>
+        <p class="lede">Choose which composer actions trigger cleanup and which field keywords should be treated as recoverable drafts.</p>
+      </header>
+
+      <section class="panel">
+        <h2>Protected Actions</h2>
+        <p class="panel-copy">When one of these actions succeeds in Salesforce, the related saved draft is cleared.</p>
+        <div id="actions" class="check-grid"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Field Keywords</h2>
+        <p class="panel-copy">Any textarea, text input, or editable field containing one of these keywords in its label or surrounding context can be protected.</p>
+        <label class="stack" for="keywords">
+          <span>One keyword per line</span>
+          <textarea id="keywords" rows="8" spellcheck="false"></textarea>
+        </label>
+      </section>
+
+      <section class="panel panel-inline">
+        <label class="toggle">
+          <input id="showToasts" type="checkbox" />
+          <span>Show save and restore toasts in Salesforce</span>
+        </label>
+      </section>
+
+      <footer class="footer">
+        <button id="reset" class="button button-secondary" type="button">Reset Defaults</button>
+        <button id="save" class="button" type="button">Save Settings</button>
+        <p id="status" class="status" aria-live="polite"></p>
+      </footer>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Salesforce Draft Guard",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Protects Salesforce activity drafts from accidental refreshes and frame reloads.",
   "permissions": [
     "storage"
@@ -11,8 +11,10 @@
     "https://*.lightning.force.com/*"
   ],
   "action": {
-    "default_title": "Salesforce Draft Guard"
+    "default_title": "Salesforce Draft Guard",
+    "default_popup": "popup.html"
   },
+  "options_page": "options.html",
   "content_scripts": [
     {
       "matches": [

@@ -2,18 +2,26 @@ const STORAGE_PREFIX = "sfdg:draft:";
 const SAVE_DEBOUNCE_MS = 400;
 const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
+const DEFAULT_SETTINGS = {
+  protectedActions: ["send", "share", "save", "post", "log a call"],
+  fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
+  showToasts: true
+};
 
 const draftCache = new Map();
 const pendingActions = [];
 const saveTimers = new WeakMap();
 const storageArea = chrome.storage.session || chrome.storage.local;
+const settingsArea = chrome.storage.sync || chrome.storage.local;
 
 let observerStarted = false;
 let toastNode;
+let settings = { ...DEFAULT_SETTINGS };
 
 bootstrap();
 
-function bootstrap() {
+async function bootstrap() {
+  settings = await loadSettings();
   injectNetworkHook();
   bindGlobalListeners();
   scanAndRestore(document);
@@ -47,6 +55,22 @@ function bindGlobalListeners() {
   document.addEventListener("change", handleInputEvent, true);
   document.addEventListener("click", handleClickEvent, true);
   window.addEventListener("message", handleWindowMessage);
+  chrome.storage.onChanged.addListener(handleStorageChange);
+}
+
+function handleStorageChange(changes, areaName) {
+  if (areaName !== "sync" && areaName !== "local") {
+    return;
+  }
+
+  const relevantKeys = ["protectedActions", "fieldKeywords", "showToasts"];
+  if (!relevantKeys.some((key) => key in changes)) {
+    return;
+  }
+
+  loadSettings().then((nextSettings) => {
+    settings = nextSettings;
+  });
 }
 
 function startObserver() {
@@ -89,7 +113,7 @@ function handleClickEvent(event) {
     return;
   }
 
-  const actionLabel = normalizeWhitespace(button.textContent || "");
+  const actionLabel = normalizeWhitespace(button.textContent || "").toLowerCase();
   if (!isSubmitAction(actionLabel)) {
     return;
   }
@@ -164,7 +188,9 @@ async function persistDraft(element) {
     url: location.href,
     title: document.title,
     scope: meta.scope,
-    fieldKey: meta.fieldKey
+    fieldKey: meta.fieldKey,
+    actionType: meta.actionType,
+    label: meta.label
   };
 
   draftCache.set(meta.storageKey, draft);
@@ -184,7 +210,9 @@ function scanAndRestore(root) {
   }
 
   if (queryRoot) {
-    candidates.push(...queryRoot.querySelectorAll("textarea, input[type='text'], [contenteditable], [contenteditable='true']"));
+    candidates.push(
+      ...queryRoot.querySelectorAll("textarea, input[type='text'], [contenteditable], [contenteditable='true']")
+    );
   }
 
   candidates.forEach((element) => {
@@ -242,11 +270,15 @@ function getDraftMetadata(element) {
 
   const container = getContainer(element);
   const scope = getContainerScope(container);
+  const actionType = getContainerActionType(container);
+  const label = getElementLabel(element);
   const fieldKey = getFieldKey(element, container);
 
   return {
     scope,
     fieldKey,
+    actionType,
+    label,
     storageKey: `${STORAGE_PREFIX}${scope}:${fieldKey}`
   };
 }
@@ -430,10 +462,13 @@ function isDraftCandidate(element) {
     return false;
   }
 
-  const label = `${getElementLabel(element)} ${element.className || ""}`.toLowerCase();
-  const containerText = (element.closest("[role='dialog'], article, section, form")?.textContent || "").toLowerCase();
+  const semanticText = normalizeWhitespace(
+    `${getElementLabel(element)} ${element.className || ""} ${
+      element.closest("[role='dialog'], article, section, form")?.textContent || ""
+    }`
+  ).toLowerCase();
 
-  return /(email|post|call|comment|note|description|body|subject|message)/.test(`${label} ${containerText}`);
+  return settings.fieldKeywords.some((keyword) => semanticText.includes(keyword));
 }
 
 function getDraftElement(target) {
@@ -462,7 +497,7 @@ function findText(root, selector) {
 }
 
 function isSubmitAction(actionLabel) {
-  return /^(send|share|save|post|log a call)$/i.test(actionLabel);
+  return settings.protectedActions.includes(actionLabel.toLowerCase());
 }
 
 function prunePendingActions() {
@@ -482,6 +517,27 @@ async function removeStorageKeys(keys) {
   await storageArea.remove(keys);
 }
 
+async function loadSettings() {
+  const stored = await settingsArea.get(Object.keys(DEFAULT_SETTINGS));
+  return normalizeSettings(stored);
+}
+
+function normalizeSettings(stored) {
+  return {
+    protectedActions: normalizeList(stored.protectedActions, DEFAULT_SETTINGS.protectedActions),
+    fieldKeywords: normalizeList(stored.fieldKeywords, DEFAULT_SETTINGS.fieldKeywords),
+    showToasts: stored.showToasts !== false
+  };
+}
+
+function normalizeList(value, fallback) {
+  const source = Array.isArray(value) ? value : fallback;
+  const normalized = source
+    .map((entry) => normalizeWhitespace(String(entry || "").toLowerCase()))
+    .filter(Boolean);
+  return normalized.length ? Array.from(new Set(normalized)) : [...fallback];
+}
+
 function normalizeWhitespace(value) {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -496,7 +552,7 @@ function hashKey(value) {
 }
 
 function showToast(message) {
-  if (!document.body) {
+  if (!settings.showToasts || !document.body) {
     return;
   }
 

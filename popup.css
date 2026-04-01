@@ -1,0 +1,117 @@
+:root {
+  color-scheme: light;
+  --bg: #f7f1e8;
+  --card: #fffaf4;
+  --line: #dbc9b7;
+  --text: #2f2419;
+  --muted: #736355;
+  --accent: #1d5f53;
+  --accent-soft: #e1f0eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 380px;
+  background:
+    radial-gradient(circle at top right, rgba(29, 95, 83, 0.14), transparent 28%),
+    var(--bg);
+  color: var(--text);
+  font: 14px/1.45 Georgia, "Times New Roman", serif;
+}
+
+.popup {
+  padding: 16px;
+}
+
+.popup-header,
+.toolbar,
+.draft-meta,
+.draft-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font: 600 11px/1.2 "Trebuchet MS", sans-serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.toolbar {
+  margin: 16px 0 10px;
+}
+
+.button,
+.link-button {
+  border-radius: 999px;
+  cursor: pointer;
+  font: 600 12px/1 "Trebuchet MS", sans-serif;
+}
+
+.button {
+  border: 0;
+  padding: 10px 14px;
+  background: var(--accent);
+  color: #f5f4f1;
+}
+
+.button-secondary,
+.link-button,
+.clear-button {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--line);
+}
+
+.link-button,
+.clear-button {
+  padding: 8px 12px;
+}
+
+.summary {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+.drafts {
+  display: grid;
+  gap: 10px;
+}
+
+.draft-card,
+.empty-state {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--card);
+  padding: 14px;
+}
+
+.draft-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.draft-meta {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.draft-preview {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--text);
+}

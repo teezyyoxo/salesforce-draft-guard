@@ -1,14 +1,18 @@
 {
   "manifest_version": 3,
   "name": "Salesforce Draft Guard",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Protects Salesforce activity drafts from accidental refreshes and frame reloads.",
   "permissions": [
     "storage"
   ],
   "host_permissions": [
     "https://*.salesforce.com/*",
-    "https://*.lightning.force.com/*"
+    "https://*.lightning.force.com/*",
+    "https://*.my.salesforce.com/*",
+    "https://*.visualforce.com/*",
+    "https://*.vf.force.com/*",
+    "https://*.salesforce-visualforce.com/*"
   ],
   "action": {
     "default_title": "Salesforce Draft Guard",
@@ -22,7 +26,11 @@
     {
       "matches": [
         "https://*.salesforce.com/*",
-        "https://*.lightning.force.com/*"
+        "https://*.lightning.force.com/*",
+        "https://*.my.salesforce.com/*",
+        "https://*.visualforce.com/*",
+        "https://*.vf.force.com/*",
+        "https://*.salesforce-visualforce.com/*"
       ],
       "js": [
         "content.js"
@@ -31,7 +39,9 @@
         "content.css"
       ],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
     }
   ],
   "web_accessible_resources": [
@@ -41,7 +51,11 @@
       ],
       "matches": [
         "https://*.salesforce.com/*",
-        "https://*.lightning.force.com/*"
+        "https://*.lightning.force.com/*",
+        "https://*.my.salesforce.com/*",
+        "https://*.visualforce.com/*",
+        "https://*.vf.force.com/*",
+        "https://*.salesforce-visualforce.com/*"
       ]
     }
   ]

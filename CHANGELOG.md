@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.2] - 2026-04-03
+
+### Changed
+- Hardened `content.js` storage access paths to detect and suppress repeated `Extension context invalidated` failures across session/local reads, writes, clears, and settings loads.
+- Expanded Salesforce Email iframe binding in `content.js` to treat CKEditor Email Body frames as valid draft editors more consistently and attach restore/listener flow with additional email diagnostics.
+- Added explicit email restore outcome logging in `content.js` so Email restore attempts now report `email draft restored` or `email restore skipped` with reason codes.
+
+### Verified
+- Confirmed `content.js` passes `node --check` after the 0.2.2 updates.
+
 ## [0.2.1] - 2026-04-03
 
 ### Added

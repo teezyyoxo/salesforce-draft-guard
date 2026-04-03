@@ -2,8 +2,11 @@ const STORAGE_PREFIX = "sfdg:draft:";
 const SAVE_DEBOUNCE_MS = 400;
 const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
-const DRAFT_ELEMENT_SELECTOR = "textarea, input[type='text'], [contenteditable], [contenteditable='true'], body[contenteditable], [role='textbox'][contenteditable], .cke_editable";
-const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputContainer textarea, .publisherInputContainer input[type='text'], .publisherInputContainer [contenteditable], body[role='textbox'][contenteditable='true'], [role='textbox'][contenteditable='true'][aria-label='Email Body'], .cke_editable";
+const DRAFT_ELEMENT_SELECTOR = "textarea, input[type='text'], [contenteditable='true'], body[contenteditable='true'], .cke_editable";
+const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputContainer textarea, .publisherInputContainer input[type='text'], .publisherInputContainer [contenteditable], body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], [role='textbox'][contenteditable='true'][aria-label='Email Body'], .cke_editable, .cke_wysiwyg_frame";
+const DEBUG_ENABLED = true;
+const DEBUG_PREFIX = "[SFDG]";
+const EXTENSION_CONTEXT_INVALIDATED_TEXT = "extension context invalidated";
 const DEFAULT_SETTINGS = {
   protectedActions: ["send", "share", "save", "post", "log a call"],
   fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
@@ -13,6 +16,8 @@ const DEFAULT_SETTINGS = {
 const draftCache = new Map();
 const pendingActions = [];
 const saveTimers = new WeakMap();
+const observedEditors = new WeakSet();
+const observedFrames = new WeakSet();
 const sessionStorageArea = chrome.storage.session;
 const localStorageArea = chrome.storage.local;
 const settingsArea = chrome.storage.sync || chrome.storage.local;
@@ -20,11 +25,199 @@ const settingsArea = chrome.storage.sync || chrome.storage.local;
 let observerStarted = false;
 let toastNode;
 let settings = { ...DEFAULT_SETTINGS };
+let storageUnavailableDueToContext = false;
+
+function debugLog(...args) {
+  if (!DEBUG_ENABLED) {
+    return;
+  }
+
+  console.log(DEBUG_PREFIX, ...args);
+}
+
+function debugWarn(...args) {
+  if (!DEBUG_ENABLED) {
+    return;
+  }
+
+  console.warn(DEBUG_PREFIX, ...args);
+}
+
+function isExtensionContextInvalidated(error) {
+  if (!error) {
+    return false;
+  }
+
+  const message = normalizeWhitespace(String(error.message || error)).toLowerCase();
+  return message.includes(EXTENSION_CONTEXT_INVALIDATED_TEXT);
+}
+
+function markStorageUnavailable(error, operation) {
+  if (!isExtensionContextInvalidated(error)) {
+    return false;
+  }
+
+  if (!storageUnavailableDueToContext) {
+    debugWarn(`storage access disabled after ${operation}: extension context invalidated`, error);
+  }
+  storageUnavailableDueToContext = true;
+  return true;
+}
+
+function isElementNode(value) {
+  return Boolean(value) && value.nodeType === 1;
+}
+
+function isDocumentNode(value) {
+  return Boolean(value) && value.nodeType === 9;
+}
+
+function isDocumentFragmentNode(value) {
+  return Boolean(value) && value.nodeType === 11;
+}
+
+function isQueryableRoot(value) {
+  return isElementNode(value) || isDocumentNode(value) || isDocumentFragmentNode(value);
+}
+
+function isIframeElement(value) {
+  return isElementNode(value) && value.tagName && value.tagName.toLowerCase() === "iframe";
+}
+
+function isTextInputElement(value) {
+  if (!isElementNode(value)) {
+    return false;
+  }
+
+  const tagName = value.tagName.toLowerCase();
+  return tagName === "textarea" || (tagName === "input" && (value.getAttribute("type") || "text").toLowerCase() === "text");
+}
+
+function isEditableElement(value) {
+  if (!isElementNode(value)) {
+    return false;
+  }
+
+  return Boolean(value.isContentEditable) || String(value.getAttribute("contenteditable") || "").toLowerCase() === "true";
+}
+
+function isEmailEditorElement(element) {
+  if (!isElementNode(element)) {
+    return false;
+  }
+
+  return (
+    element.getAttribute("aria-label") === "Email Body" ||
+    element.getAttribute("title") === "Email Body" ||
+    element.classList.contains("cke_editable") ||
+    Boolean(element.closest(".cke_editor_editor, .content.iframe-parent"))
+  );
+}
+
+function normalizeDraftEditorElement(element) {
+  if (!isElementNode(element) || isIframeElement(element) || element.matches(".cke_wysiwyg_frame")) {
+    return null;
+  }
+
+  const postContainer = element.closest(".publisherInputContainer");
+  if (postContainer) {
+    return (
+      postContainer.querySelector("[contenteditable='true'][role='textbox'], [contenteditable='true'].ql-editor, [contenteditable='true']") ||
+      postContainer.querySelector("textarea, input[type='text']") ||
+      null
+    );
+  }
+
+  if (element.matches("body[contenteditable='true'], .cke_editable")) {
+    return element;
+  }
+
+  if (element.closest(".cke_contents, .cke_editor_editor")) {
+    return element.closest(".cke_editable, body[contenteditable='true'], [contenteditable='true']");
+  }
+
+  if (element.matches("textarea, input[type='text'], [contenteditable='true']")) {
+    return element;
+  }
+
+  return null;
+}
+
+function getStablePageContextKey() {
+  try {
+    const url = new URL(location.href);
+    const volatileParamPattern = /nonce|token|confirmation|ltn_|clc|cache|timestamp|ts/i;
+    const stableParams = [];
+
+    for (const [key, value] of url.searchParams.entries()) {
+      if (!volatileParamPattern.test(key)) {
+        stableParams.push([key, value]);
+      }
+    }
+
+    stableParams.sort((a, b) => a[0].localeCompare(b[0]));
+    const search = stableParams.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+    return `${url.origin}${url.pathname}${search ? `?${search}` : ""}`;
+  } catch (error) {
+    debugWarn("failed to build stable page key", error);
+    return `${location.origin}${location.pathname}`;
+  }
+}
+
+function shouldRestoreOverCurrentValue(currentValue, draftValue) {
+  const current = normalizeWhitespace(currentValue || "");
+  const draft = normalizeWhitespace(draftValue || "");
+
+  if (!current) {
+    return true;
+  }
+
+  if (!draft || current === draft) {
+    return false;
+  }
+
+  // Email editors are commonly pre-populated with signature/quoted content.
+  // If the current content appears to be a subset of the saved draft, prefer restoring the draft.
+  if (draft.includes(current) && draft.length > current.length) {
+    return true;
+  }
+
+  return false;
+}
+
+function collectDraftEditors(root) {
+  const queryRoot =
+    isQueryableRoot(root) ? root : null;
+  if (!queryRoot) {
+    return [];
+  }
+
+  const uniqueEditors = new Set();
+  const pushCandidate = (candidate) => {
+    const normalized = normalizeDraftEditorElement(candidate);
+    if (!normalized || !isDraftCandidate(normalized)) {
+      return;
+    }
+
+    uniqueEditors.add(normalized);
+  };
+
+  if (isElementNode(queryRoot)) {
+    pushCandidate(queryRoot);
+  }
+
+  queryRoot.querySelectorAll(DRAFT_ELEMENT_SELECTOR).forEach((candidate) => {
+    pushCandidate(candidate);
+  });
+
+  return Array.from(uniqueEditors);
+}
 
 bootstrap();
 
 async function bootstrap() {
   settings = await loadSettings();
+  debugLog("bootstrap", { href: location.href, settings });
   injectNetworkHook();
   bindGlobalListeners();
   scanAndRestore(document);
@@ -55,7 +248,11 @@ function injectNetworkHook() {
 
 function bindGlobalListeners() {
   document.addEventListener("input", handleInputEvent, true);
+  document.addEventListener("beforeinput", handleInputEvent, true);
   document.addEventListener("change", handleInputEvent, true);
+  document.addEventListener("keyup", handleInputEvent, true);
+  document.addEventListener("paste", handleInputEvent, true);
+  document.addEventListener("blur", handleInputEvent, true);
   document.addEventListener("click", handleClickEvent, true);
   window.addEventListener("message", handleWindowMessage);
   chrome.storage.onChanged.addListener(handleStorageChange);
@@ -84,7 +281,7 @@ function startObserver() {
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       for (const addedNode of mutation.addedNodes) {
-        if (!(addedNode instanceof Element)) {
+        if (!isElementNode(addedNode)) {
           continue;
         }
 
@@ -102,16 +299,42 @@ function startObserver() {
 }
 
 function handleInputEvent(event) {
+  if (isEmailEditorElement(event.target)) {
+    debugLog("email input event", {
+      type: event.type,
+      targetTag: event.target.tagName,
+      targetClass: event.target.className || "",
+      ariaLabel: event.target.getAttribute && event.target.getAttribute("aria-label"),
+      title: event.target.getAttribute && event.target.getAttribute("title")
+    });
+  }
+
   const target = getDraftElement(event.target);
   if (!target) {
+    if (isEmailEditorElement(event.target)) {
+      debugWarn("email input not matched to draft element", {
+        type: event.type,
+        targetTag: event.target.tagName,
+        targetClass: event.target.className || ""
+      });
+    }
     return;
+  }
+
+  if (isEmailEditorElement(target)) {
+    debugLog("email matched draft element", {
+      type: event.type,
+      tag: target.tagName,
+      className: target.className || "",
+      valueLength: readElementValue(target).length
+    });
   }
 
   scheduleSave(target);
 }
 
 function handleClickEvent(event) {
-  const button = event.target instanceof Element ? event.target.closest("button, [role='button'], a") : null;
+  const button = isElementNode(event.target) ? event.target.closest("button, [role='button'], a") : null;
   if (!button) {
     return;
   }
@@ -175,6 +398,12 @@ function scheduleSave(element) {
 async function persistDraft(element) {
   const value = readElementValue(element);
   const meta = getDraftMetadata(element);
+  if (isEmailEditorElement(element)) {
+    debugLog("persistDraft called for email element", {
+      valueLength: value.length,
+      hasMeta: Boolean(meta)
+    });
+  }
   if (!meta) {
     return;
   }
@@ -198,25 +427,34 @@ async function persistDraft(element) {
 
   draftCache.set(meta.storageKey, draft);
   await setDraftValue(meta.storageKey, draft);
+  if (isEmailEditorElement(element)) {
+    debugLog("email draft saved", {
+      storageKey: meta.storageKey,
+      scope: meta.scope,
+      fieldKey: meta.fieldKey,
+      valueLength: value.length
+    });
+  }
   showToast("Draft saved locally.");
 }
 
 function scanAndRestore(root) {
-  const candidates = [];
   const queryRoot =
-    root instanceof Document || root instanceof DocumentFragment || root instanceof Element ? root : null;
-
-  if (root instanceof Element && isDraftCandidate(root)) {
-    candidates.push(root);
-  }
+    isQueryableRoot(root) ? root : null;
+  const candidates = collectDraftEditors(root);
 
   if (queryRoot) {
-    candidates.push(
-      ...queryRoot.querySelectorAll(DRAFT_ELEMENT_SELECTOR)
-    );
+    const emailFrames = queryRoot.querySelectorAll("iframe.cke_wysiwyg_frame[title='Email Body']");
+    if (emailFrames.length) {
+      debugLog("email iframe(s) discovered", { count: emailFrames.length, href: location.href });
+    }
+    emailFrames.forEach((frame) => {
+      attachEmailFrameObserver(frame);
+    });
   }
 
   candidates.forEach((element) => {
+    ensureDraftObserver(element);
     restoreDraft(element).catch((error) => {
       console.error("Salesforce Draft Guard failed to restore a draft.", error);
     });
@@ -225,9 +463,16 @@ function scanAndRestore(root) {
 
 async function restoreDraft(element) {
   const meta = getDraftMetadata(element);
-  if (!meta || hasUserValue(element)) {
+  if (!meta) {
+    if (isEmailEditorElement(element)) {
+      debugLog("email restore skipped", {
+        reason: "missing-metadata"
+      });
+    }
     return;
   }
+
+  const currentValue = readElementValue(element);
 
   let draft = draftCache.get(meta.storageKey);
   if (!draft) {
@@ -239,11 +484,36 @@ async function restoreDraft(element) {
   }
 
   if (!draft || !draft.value) {
+    if (isEmailEditorElement(element)) {
+      debugLog("email restore skipped", {
+        reason: "no-saved-draft",
+        key: meta.storageKey
+      });
+    }
+    return;
+  }
+
+  if (!shouldRestoreOverCurrentValue(currentValue, draft.value)) {
+    if (isEmailEditorElement(element)) {
+      debugLog("email restore skipped", {
+        reason: "current-value-not-eligible",
+        currentLength: currentValue.length,
+        draftLength: draft.value.length,
+        key: meta.storageKey
+      });
+    }
     return;
   }
 
   writeElementValue(element, draft.value);
   dispatchSyntheticInput(element);
+  if (isEmailEditorElement(element)) {
+    debugLog("email draft restored", {
+      key: meta.storageKey,
+      currentLength: currentValue.length,
+      draftLength: draft.value.length
+    });
+  }
   showToast("Recovered a local draft.");
 }
 
@@ -257,8 +527,7 @@ async function clearDraftKeys(storageKeys) {
 }
 
 function getDraftKeysForContainer(container) {
-  return Array.from(container.querySelectorAll(DRAFT_ELEMENT_SELECTOR))
-    .filter((element) => isDraftCandidate(element))
+  return collectDraftEditors(container)
     .map((element) => getDraftMetadata(element))
     .filter(Boolean)
     .map((meta) => meta.storageKey);
@@ -296,7 +565,7 @@ function getContainerScope(container) {
   const recordId =
     findRecordId(container) ||
     findRecordId(document.body) ||
-    normalizeWhitespace(location.pathname + location.search);
+    getStablePageContextKey();
   const actionType = getContainerActionType(container);
   const heading =
     findText(container, "h1, h2, h3, [role='heading'], .title, .slds-text-heading_small") ||
@@ -323,7 +592,10 @@ function getContainerActionType(container) {
   if (container.matches(".publisherInputContainer") || container.querySelector(".publisherInputContainer")) {
     return "post";
   }
-  if (container.matches("body[role='textbox'][contenteditable='true'], .cke_editable") || text.includes("email body")) {
+  if (
+    container.matches("body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], .cke_editable, .cke_wysiwyg_frame") ||
+    text.includes("email body")
+  ) {
     return "email";
   }
   if (text.includes("log a call")) {
@@ -398,14 +670,12 @@ function inferFieldRole(element, container) {
 }
 
 function getCandidateIndex(element, container) {
-  const candidates = Array.from(
-    container.querySelectorAll(DRAFT_ELEMENT_SELECTOR)
-  ).filter((candidate) => isDraftCandidate(candidate));
+  const candidates = collectDraftEditors(container);
   return String(Math.max(candidates.indexOf(element), 0));
 }
 
 function findRecordId(root) {
-  if (!(root instanceof Element || root instanceof Document)) {
+  if (!(isElementNode(root) || isDocumentNode(root))) {
     return "";
   }
 
@@ -428,11 +698,11 @@ function findRecordId(root) {
 }
 
 function readElementValue(element) {
-  if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+  if (isTextInputElement(element)) {
     return element.value || "";
   }
 
-  if (element instanceof HTMLElement && element.isContentEditable) {
+  if (isEditableElement(element)) {
     return element.innerText || "";
   }
 
@@ -440,12 +710,12 @@ function readElementValue(element) {
 }
 
 function writeElementValue(element, value) {
-  if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+  if (isTextInputElement(element)) {
     element.value = value;
     return;
   }
 
-  if (element instanceof HTMLElement && element.isContentEditable) {
+  if (isEditableElement(element)) {
     element.innerText = value;
   }
 }
@@ -455,7 +725,7 @@ function hasUserValue(element) {
 }
 
 function isDraftCandidate(element) {
-  if (!(element instanceof Element)) {
+  if (!isElementNode(element)) {
     return false;
   }
 
@@ -463,7 +733,7 @@ function isDraftCandidate(element) {
   const isTextInput =
     tagName === "textarea" ||
     (tagName === "input" && (element.getAttribute("type") || "text").toLowerCase() === "text") ||
-    (element instanceof HTMLElement && element.isContentEditable);
+    isEditableElement(element);
 
   if (!isTextInput) {
     return false;
@@ -481,19 +751,123 @@ function isDraftCandidate(element) {
 }
 
 function getDraftElement(target) {
-  if (target instanceof Element && isDraftCandidate(target)) {
-    return target;
-  }
+  if (isElementNode(target)) {
+    const direct = normalizeDraftEditorElement(target);
+    if (direct && isDraftCandidate(direct)) {
+      return direct;
+    }
 
-  if (target instanceof Element) {
     const candidate = target.closest(DRAFT_ELEMENT_SELECTOR);
-    if (candidate && isDraftCandidate(candidate)) {
-      return candidate;
+    const normalized = normalizeDraftEditorElement(candidate);
+    if (normalized && isDraftCandidate(normalized)) {
+      return normalized;
     }
   }
 
   return null;
 }
+
+function ensureDraftObserver(element) {
+  if (!isElementNode(element) || observedEditors.has(element)) {
+    return;
+  }
+
+  if (normalizeDraftEditorElement(element) !== element) {
+    return;
+  }
+
+  // CKEditor email bodies can mutate DOM without firing reliable input events.
+  if (!isEditableElement(element) && element.tagName.toLowerCase() !== "body") {
+    return;
+  }
+
+  const observer = new MutationObserver((mutations) => {
+    if (!mutations.length) {
+      return;
+    }
+
+    scheduleSave(element);
+  });
+
+  observer.observe(element, {
+    childList: true,
+    subtree: true,
+    characterData: true
+  });
+
+  observedEditors.add(element);
+}
+
+function attachEmailFrameObserver(frame) {
+  if (!isIframeElement(frame) || observedFrames.has(frame)) {
+    return;
+  }
+
+  debugLog("attachEmailFrameObserver", {
+    title: frame.title || "",
+    name: frame.name || "",
+    src: frame.getAttribute("src") || ""
+  });
+
+  const bindFrameEditor = () => {
+    let frameDocument;
+    try {
+      frameDocument = frame.contentDocument;
+    } catch (error) {
+      debugWarn("could not access Email editor iframe", error);
+      return;
+    }
+
+    if (!frameDocument || !frameDocument.body) {
+      debugWarn("email iframe document/body missing");
+      return;
+    }
+
+    const editorBody = frameDocument.body;
+    if (!editorBody.getAttribute("aria-label")) {
+      editorBody.setAttribute("aria-label", "Email Body");
+    }
+    debugLog("email iframe body found", {
+      bodyClass: editorBody.className || "",
+      ariaLabel: editorBody.getAttribute("aria-label") || "",
+      title: editorBody.getAttribute("title") || ""
+    });
+
+    const frameSemantics = normalizeWhitespace(
+      `${frame.title || ""} ${frame.name || ""} ${editorBody.getAttribute("aria-label") || ""} ${editorBody.getAttribute("title") || ""}`
+    ).toLowerCase();
+    const isEmailFrameBody =
+      isDraftCandidate(editorBody) ||
+      editorBody.classList.contains("cke_editable") ||
+      frameSemantics.includes("email body");
+    if (!isEmailFrameBody) {
+      debugWarn("email iframe body is not draft candidate");
+      return;
+    }
+
+    debugLog("email iframe body accepted as draft candidate");
+
+    ensureDraftObserver(editorBody);
+    frameDocument.addEventListener("input", handleInputEvent, true);
+    frameDocument.addEventListener("beforeinput", handleInputEvent, true);
+    frameDocument.addEventListener("keyup", handleInputEvent, true);
+    frameDocument.addEventListener("paste", handleInputEvent, true);
+    frameDocument.addEventListener("blur", handleInputEvent, true);
+    restoreDraft(editorBody).catch((error) => {
+      console.error("Salesforce Draft Guard failed to restore an Email draft.", error);
+    });
+
+    debugLog("email iframe listeners attached");
+  };
+
+  frame.addEventListener("load", () => {
+    debugLog("email iframe load event");
+    bindFrameEditor();
+  });
+  observedFrames.add(frame);
+  bindFrameEditor();
+}
+
 
 function matchesKnownDraftSurface(element) {
   if (element.matches(KNOWN_DRAFT_SURFACE_SELECTOR)) {
@@ -505,8 +879,9 @@ function matchesKnownDraftSurface(element) {
   }
 
   if (
-    element.matches("body[role='textbox'][contenteditable='true'], .cke_editable") ||
-    element.getAttribute("aria-label") === "Email Body"
+    element.matches("body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], .cke_editable, .cke_wysiwyg_frame") ||
+    element.getAttribute("aria-label") === "Email Body" ||
+    element.getAttribute("title") === "Email Body"
   ) {
     return true;
   }
@@ -539,6 +914,10 @@ function prunePendingActions() {
 }
 
 async function getDraftValue(key) {
+  if (storageUnavailableDueToContext) {
+    return {};
+  }
+
   if (sessionStorageArea) {
     try {
       const result = await sessionStorageArea.get(key);
@@ -546,24 +925,50 @@ async function getDraftValue(key) {
         return result;
       }
     } catch (error) {
+      if (markStorageUnavailable(error, "session read")) {
+        return {};
+      }
       console.warn("Salesforce Draft Guard session storage read failed, falling back to local storage.", error);
     }
   }
 
-  return localStorageArea.get(key);
+  try {
+    return await localStorageArea.get(key);
+  } catch (error) {
+    if (markStorageUnavailable(error, "local read")) {
+      return {};
+    }
+    throw error;
+  }
 }
 
 async function setDraftValue(key, value) {
+  if (storageUnavailableDueToContext) {
+    return;
+  }
+
   if (sessionStorageArea) {
     try {
       await sessionStorageArea.set({ [key]: value });
+      debugLog("setDraftValue wrote to session", { key });
       return;
     } catch (error) {
-      console.warn("Salesforce Draft Guard session storage write failed, falling back to local storage.", error);
+      if (markStorageUnavailable(error, "session write")) {
+        return;
+      }
+      debugWarn("session storage write failed, falling back to local", error);
     }
   }
 
-  await localStorageArea.set({ [key]: value });
+  try {
+    await localStorageArea.set({ [key]: value });
+    debugLog("setDraftValue wrote to local", { key });
+  } catch (error) {
+    if (markStorageUnavailable(error, "local write")) {
+      return;
+    }
+    throw error;
+  }
 }
 
 async function removeDraftKeys(keys) {
@@ -571,21 +976,46 @@ async function removeDraftKeys(keys) {
     return;
   }
 
+  if (storageUnavailableDueToContext) {
+    return;
+  }
+
   const tasks = [];
   if (sessionStorageArea) {
     tasks.push(
       sessionStorageArea.remove(keys).catch((error) => {
+        if (markStorageUnavailable(error, "session remove")) {
+          return;
+        }
         console.warn("Salesforce Draft Guard session storage clear failed.", error);
       })
     );
   }
-  tasks.push(localStorageArea.remove(keys));
+  tasks.push(
+    localStorageArea.remove(keys).catch((error) => {
+      if (markStorageUnavailable(error, "local remove")) {
+        return;
+      }
+      throw error;
+    })
+  );
   await Promise.all(tasks);
 }
 
 async function loadSettings() {
-  const stored = await settingsArea.get(Object.keys(DEFAULT_SETTINGS));
-  return normalizeSettings(stored);
+  if (storageUnavailableDueToContext) {
+    return normalizeSettings({});
+  }
+
+  try {
+    const stored = await settingsArea.get(Object.keys(DEFAULT_SETTINGS));
+    return normalizeSettings(stored);
+  } catch (error) {
+    if (markStorageUnavailable(error, "settings read")) {
+      return normalizeSettings({});
+    }
+    throw error;
+  }
 }
 
 function normalizeSettings(stored) {

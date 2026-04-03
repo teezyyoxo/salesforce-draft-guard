@@ -2,6 +2,8 @@ const STORAGE_PREFIX = "sfdg:draft:";
 const SAVE_DEBOUNCE_MS = 400;
 const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
+const DRAFT_ELEMENT_SELECTOR = "textarea, input[type='text'], [contenteditable], [contenteditable='true'], body[contenteditable], [role='textbox'][contenteditable], .cke_editable";
+const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputContainer textarea, .publisherInputContainer input[type='text'], .publisherInputContainer [contenteditable], body[role='textbox'][contenteditable='true'], [role='textbox'][contenteditable='true'][aria-label='Email Body'], .cke_editable";
 const DEFAULT_SETTINGS = {
   protectedActions: ["send", "share", "save", "post", "log a call"],
   fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
@@ -11,7 +13,8 @@ const DEFAULT_SETTINGS = {
 const draftCache = new Map();
 const pendingActions = [];
 const saveTimers = new WeakMap();
-const storageArea = chrome.storage.session || chrome.storage.local;
+const sessionStorageArea = chrome.storage.session;
+const localStorageArea = chrome.storage.local;
 const settingsArea = chrome.storage.sync || chrome.storage.local;
 
 let observerStarted = false;
@@ -177,7 +180,7 @@ async function persistDraft(element) {
   }
 
   if (!value.trim()) {
-    await removeStorageKeys([meta.storageKey]);
+    await removeDraftKeys([meta.storageKey]);
     draftCache.delete(meta.storageKey);
     return;
   }
@@ -194,9 +197,7 @@ async function persistDraft(element) {
   };
 
   draftCache.set(meta.storageKey, draft);
-  await storageArea.set({
-    [meta.storageKey]: draft
-  });
+  await setDraftValue(meta.storageKey, draft);
   showToast("Draft saved locally.");
 }
 
@@ -211,7 +212,7 @@ function scanAndRestore(root) {
 
   if (queryRoot) {
     candidates.push(
-      ...queryRoot.querySelectorAll("textarea, input[type='text'], [contenteditable], [contenteditable='true']")
+      ...queryRoot.querySelectorAll(DRAFT_ELEMENT_SELECTOR)
     );
   }
 
@@ -230,7 +231,7 @@ async function restoreDraft(element) {
 
   let draft = draftCache.get(meta.storageKey);
   if (!draft) {
-    const result = await storageArea.get(meta.storageKey);
+    const result = await getDraftValue(meta.storageKey);
     draft = result[meta.storageKey];
     if (draft) {
       draftCache.set(meta.storageKey, draft);
@@ -252,11 +253,11 @@ async function clearDraftKeys(storageKeys) {
   }
 
   storageKeys.forEach((key) => draftCache.delete(key));
-  await removeStorageKeys(storageKeys);
+  await removeDraftKeys(storageKeys);
 }
 
 function getDraftKeysForContainer(container) {
-  return Array.from(container.querySelectorAll("textarea, input[type='text'], [contenteditable], [contenteditable='true']"))
+  return Array.from(container.querySelectorAll(DRAFT_ELEMENT_SELECTOR))
     .filter((element) => isDraftCandidate(element))
     .map((element) => getDraftMetadata(element))
     .filter(Boolean)
@@ -286,7 +287,7 @@ function getDraftMetadata(element) {
 function getContainer(element) {
   return (
     element.closest(
-      "[role='dialog'], article, section, form, .forceChatterPublisher, .oneRecordActionWrapper, .slds-modal, .ql-container"
+      "[role='dialog'], article, section, form, .forceChatterPublisher, .oneRecordActionWrapper, .slds-modal, .ql-container, .publisherInputContainer, .cke_contents, .cke_inner"
     ) || document.body
   );
 }
@@ -319,6 +320,12 @@ function getFieldKey(element, container) {
 function getContainerActionType(container) {
   const text = normalizeWhitespace(container.textContent || "").toLowerCase();
 
+  if (container.matches(".publisherInputContainer") || container.querySelector(".publisherInputContainer")) {
+    return "post";
+  }
+  if (container.matches("body[role='textbox'][contenteditable='true'], .cke_editable") || text.includes("email body")) {
+    return "email";
+  }
   if (text.includes("log a call")) {
     return "log-a-call";
   }
@@ -392,7 +399,7 @@ function inferFieldRole(element, container) {
 
 function getCandidateIndex(element, container) {
   const candidates = Array.from(
-    container.querySelectorAll("textarea, input[type='text'], [contenteditable], [contenteditable='true']")
+    container.querySelectorAll(DRAFT_ELEMENT_SELECTOR)
   ).filter((candidate) => isDraftCandidate(candidate));
   return String(Math.max(candidates.indexOf(element), 0));
 }
@@ -462,10 +469,12 @@ function isDraftCandidate(element) {
     return false;
   }
 
+  if (matchesKnownDraftSurface(element)) {
+    return true;
+  }
+
   const semanticText = normalizeWhitespace(
-    `${getElementLabel(element)} ${element.className || ""} ${
-      element.closest("[role='dialog'], article, section, form")?.textContent || ""
-    }`
+    `${getElementLabel(element)} ${element.className || ""} ${getContainer(element).textContent || ""}`
   ).toLowerCase();
 
   return settings.fieldKeywords.some((keyword) => semanticText.includes(keyword));
@@ -477,7 +486,7 @@ function getDraftElement(target) {
   }
 
   if (target instanceof Element) {
-    const candidate = target.closest("textarea, input[type='text'], [contenteditable], [contenteditable='true']");
+    const candidate = target.closest(DRAFT_ELEMENT_SELECTOR);
     if (candidate && isDraftCandidate(candidate)) {
       return candidate;
     }
@@ -485,6 +494,26 @@ function getDraftElement(target) {
 
   return null;
 }
+
+function matchesKnownDraftSurface(element) {
+  if (element.matches(KNOWN_DRAFT_SURFACE_SELECTOR)) {
+    return true;
+  }
+
+  if (element.closest(".publisherInputContainer")) {
+    return true;
+  }
+
+  if (
+    element.matches("body[role='textbox'][contenteditable='true'], .cke_editable") ||
+    element.getAttribute("aria-label") === "Email Body"
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 
 function dispatchSyntheticInput(element) {
   element.dispatchEvent(new Event("input", { bubbles: true }));
@@ -509,12 +538,49 @@ function prunePendingActions() {
   }
 }
 
-async function removeStorageKeys(keys) {
+async function getDraftValue(key) {
+  if (sessionStorageArea) {
+    try {
+      const result = await sessionStorageArea.get(key);
+      if (result && key in result) {
+        return result;
+      }
+    } catch (error) {
+      console.warn("Salesforce Draft Guard session storage read failed, falling back to local storage.", error);
+    }
+  }
+
+  return localStorageArea.get(key);
+}
+
+async function setDraftValue(key, value) {
+  if (sessionStorageArea) {
+    try {
+      await sessionStorageArea.set({ [key]: value });
+      return;
+    } catch (error) {
+      console.warn("Salesforce Draft Guard session storage write failed, falling back to local storage.", error);
+    }
+  }
+
+  await localStorageArea.set({ [key]: value });
+}
+
+async function removeDraftKeys(keys) {
   if (!keys.length) {
     return;
   }
 
-  await storageArea.remove(keys);
+  const tasks = [];
+  if (sessionStorageArea) {
+    tasks.push(
+      sessionStorageArea.remove(keys).catch((error) => {
+        console.warn("Salesforce Draft Guard session storage clear failed.", error);
+      })
+    );
+  }
+  tasks.push(localStorageArea.remove(keys));
+  await Promise.all(tasks);
 }
 
 async function loadSettings() {

@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.1] - 2026-04-03
+
+### Added
+- Added `background.js` to enable `chrome.storage.session` access for content scripts when Chrome supports session access levels.
+
+### Changed
+- Expanded `content.js` draft-surface detection with Salesforce-specific selectors for `publisherInputContainer`, CKEditor editable regions, and `Email Body` textboxes.
+- Updated draft read, write, and clear behavior to fall back to `chrome.storage.local` when `chrome.storage.session` is unavailable or rejects from the content script context.
+- Updated `popup.js` to read and clear drafts across both session and local extension storage so the popup remains accurate during storage fallback.
+- Updated `manifest.json` to register the background service worker used for session-storage access setup.
+
+### Verified
+- Confirmed `content.js`, `popup.js`, and `background.js` pass `node --check`.
+- Re-validated `manifest.json` structure after the background-worker update.
+
 ## [0.2.0] - 2026-04-01
 
 ### Added

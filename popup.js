@@ -1,5 +1,6 @@
 const STORAGE_PREFIX = "sfdg:draft:";
-const storageArea = chrome.storage.session || chrome.storage.local;
+const sessionStorageArea = chrome.storage.session;
+const localStorageArea = chrome.storage.local;
 
 const draftsNode = document.getElementById("drafts");
 const summaryNode = document.getElementById("summary");
@@ -17,7 +18,7 @@ renderDrafts();
 async function renderDrafts() {
   const drafts = await loadDrafts();
   summaryNode.textContent = drafts.length
-    ? `${drafts.length} saved draft${drafts.length === 1 ? "" : "s"} in this browser session.`
+    ? `${drafts.length} saved draft${drafts.length === 1 ? "" : "s"} in extension storage.`
     : "No saved drafts right now.";
 
   if (!drafts.length) {
@@ -48,11 +49,26 @@ async function renderDrafts() {
 }
 
 async function loadDrafts() {
-  const stored = await storageArea.get(null);
-  return Object.entries(stored)
-    .filter(([key]) => key.startsWith(STORAGE_PREFIX))
-    .map(([key, draft]) => ({ key, ...draft }))
-    .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
+  const stores = await Promise.all([
+    readStorageArea(sessionStorageArea),
+    readStorageArea(localStorageArea)
+  ]);
+
+  const merged = new Map();
+  for (const store of stores) {
+    for (const [key, draft] of Object.entries(store)) {
+      if (!key.startsWith(STORAGE_PREFIX)) {
+        continue;
+      }
+
+      const current = merged.get(key);
+      if (!current || (draft.updatedAt || 0) >= (current.updatedAt || 0)) {
+        merged.set(key, { key, ...draft });
+      }
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
 }
 
 async function clearAllDrafts() {
@@ -61,7 +77,7 @@ async function clearAllDrafts() {
     return;
   }
 
-  await storageArea.remove(drafts.map((draft) => draft.key));
+  await removeKeys(drafts.map((draft) => draft.key));
   await renderDrafts();
 }
 
@@ -71,8 +87,32 @@ async function handleDraftAction(event) {
     return;
   }
 
-  await storageArea.remove(button.dataset.key);
+  await removeKeys([button.dataset.key]);
   await renderDrafts();
+}
+
+async function readStorageArea(area) {
+  if (!area) {
+    return {};
+  }
+
+  try {
+    return await area.get(null);
+  } catch (error) {
+    console.warn("Salesforce Draft Guard popup failed to read a storage area.", error);
+    return {};
+  }
+}
+
+async function removeKeys(keys) {
+  const tasks = [];
+  if (sessionStorageArea) {
+    tasks.push(sessionStorageArea.remove(keys).catch(() => {}));
+  }
+  if (localStorageArea) {
+    tasks.push(localStorageArea.remove(keys).catch(() => {}));
+  }
+  await Promise.all(tasks);
 }
 
 function formatTimestamp(value) {

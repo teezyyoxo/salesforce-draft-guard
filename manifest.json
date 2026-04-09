@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Salesforce Draft Guard",
   "version": "0.2.2",
-  "description": "Protects Salesforce activity drafts from accidental refreshes and frame reloads.",
+  "description": "Saves and restores Salesforce Email, Post, and activity drafts across refreshes, frame rerenders, and transient Lightning resets.",
   "permissions": [
     "storage"
   ],

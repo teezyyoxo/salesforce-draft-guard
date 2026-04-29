@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.3] - 2026-04-29
+
+### Added
+- Added dependency-free `node:test` coverage for Email iframe discovery, top-page draft scoping, contenteditable line-break normalization, and Email submit cleanup key collection.
+
+### Fixed
+- Fixed Email iframe restore tracking when Salesforce adds the CKEditor iframe itself as the mutation root.
+- Made draft metadata prefer the top Salesforce page context when available so parent-page and iframe-script tracking derive matching draft keys.
+- Included tracked Email iframe editor keys when clearing drafts after a successful Send action.
+- Normalized contenteditable draft reads and writes to reduce extra line breaks after Post composer restore.
+
+### Verified
+- Confirmed `content.js` passes `node --check`.
+- Confirmed `test/content.test.js` passes with `node --test`.
+
 ## [0.2.2] - 2026-04-03
 
 ### Changed

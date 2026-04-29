@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
 
 const draftCache = new Map();
 const pendingActions = [];
+const trackedEditors = new Map();
 const saveTimers = new WeakMap();
 const observedEditors = new WeakSet();
 const observedFrames = new WeakSet();
@@ -84,6 +85,45 @@ function isIframeElement(value) {
   return isElementNode(value) && value.tagName && value.tagName.toLowerCase() === "iframe";
 }
 
+function getPageWindow() {
+  try {
+    if (window.top && window.top.location && !String(window.top.location.href).startsWith("about:")) {
+      return window.top;
+    }
+  } catch (error) {
+    debugWarn("top window context unavailable", error);
+  }
+
+  return window;
+}
+
+function getPageDocument() {
+  try {
+    const pageWindow = getPageWindow();
+    if (pageWindow.document && pageWindow.document.body) {
+      return pageWindow.document;
+    }
+  } catch (error) {
+    debugWarn("top document context unavailable", error);
+  }
+
+  return document;
+}
+
+function getPageLocationHref() {
+  try {
+    return getPageWindow().location.href;
+  } catch (error) {
+    debugWarn("top location context unavailable", error);
+    return location.href;
+  }
+}
+
+function getPageTitle() {
+  const pageDocument = getPageDocument();
+  return pageDocument.title || document.title;
+}
+
 function isTextInputElement(value) {
   if (!isElementNode(value)) {
     return false;
@@ -145,7 +185,7 @@ function normalizeDraftEditorElement(element) {
 
 function getStablePageContextKey() {
   try {
-    const url = new URL(location.href);
+    const url = new URL(getPageLocationHref());
     const volatileParamPattern = /nonce|token|confirmation|ltn_|clc|cache|timestamp|ts/i;
     const stableParams = [];
 
@@ -345,7 +385,7 @@ function handleClickEvent(event) {
   }
 
   const container = getContainer(button);
-  const draftKeys = getDraftKeysForContainer(container);
+  const draftKeys = getDraftKeysForContainer(container, actionLabel);
   if (!draftKeys.length) {
     return;
   }
@@ -417,8 +457,8 @@ async function persistDraft(element) {
   const draft = {
     value,
     updatedAt: Date.now(),
-    url: location.href,
-    title: document.title,
+    url: getPageLocationHref(),
+    title: getPageTitle(),
     scope: meta.scope,
     fieldKey: meta.fieldKey,
     actionType: meta.actionType,
@@ -426,6 +466,7 @@ async function persistDraft(element) {
   };
 
   draftCache.set(meta.storageKey, draft);
+  trackDraftEditor(element, meta);
   await setDraftValue(meta.storageKey, draft);
   if (isEmailEditorElement(element)) {
     debugLog("email draft saved", {
@@ -444,6 +485,11 @@ function scanAndRestore(root) {
   const candidates = collectDraftEditors(root);
 
   if (queryRoot) {
+    if (isIframeElement(queryRoot) && queryRoot.matches("iframe.cke_wysiwyg_frame[title='Email Body']")) {
+      debugLog("email iframe discovered as root", { href: getPageLocationHref() });
+      attachEmailFrameObserver(queryRoot);
+    }
+
     const emailFrames = queryRoot.querySelectorAll("iframe.cke_wysiwyg_frame[title='Email Body']");
     if (emailFrames.length) {
       debugLog("email iframe(s) discovered", { count: emailFrames.length, href: location.href });
@@ -454,6 +500,10 @@ function scanAndRestore(root) {
   }
 
   candidates.forEach((element) => {
+    const meta = getDraftMetadata(element);
+    if (meta) {
+      trackDraftEditor(element, meta);
+    }
     ensureDraftObserver(element);
     restoreDraft(element).catch((error) => {
       console.error("Salesforce Draft Guard failed to restore a draft.", error);
@@ -507,6 +557,7 @@ async function restoreDraft(element) {
 
   writeElementValue(element, draft.value);
   dispatchSyntheticInput(element);
+  trackDraftEditor(element, meta);
   if (isEmailEditorElement(element)) {
     debugLog("email draft restored", {
       key: meta.storageKey,
@@ -526,11 +577,35 @@ async function clearDraftKeys(storageKeys) {
   await removeDraftKeys(storageKeys);
 }
 
-function getDraftKeysForContainer(container) {
-  return collectDraftEditors(container)
+function getDraftKeysForContainer(container, actionLabel = "") {
+  const keys = collectDraftEditors(container)
     .map((element) => getDraftMetadata(element))
     .filter(Boolean)
     .map((meta) => meta.storageKey);
+
+  const scope = getContainerScope(container);
+  const actionType = getContainerActionType(container);
+  const normalizedAction = normalizeWhitespace(actionLabel).toLowerCase();
+  for (const meta of trackedEditors.values()) {
+    if (
+      meta.scope === scope &&
+      (meta.actionType === actionType ||
+        normalizedAction === meta.actionType ||
+        (normalizedAction === "send" && meta.actionType === "email"))
+    ) {
+      keys.push(meta.storageKey);
+    }
+  }
+
+  return Array.from(new Set(keys));
+}
+
+function trackDraftEditor(element, meta) {
+  if (!isElementNode(element) || !meta) {
+    return;
+  }
+
+  trackedEditors.set(element, meta);
 }
 
 function getDraftMetadata(element) {
@@ -557,14 +632,15 @@ function getContainer(element) {
   return (
     element.closest(
       "[role='dialog'], article, section, form, .forceChatterPublisher, .oneRecordActionWrapper, .slds-modal, .ql-container, .publisherInputContainer, .cke_contents, .cke_inner"
-    ) || document.body
+    ) || getPageDocument().body || document.body
   );
 }
 
 function getContainerScope(container) {
+  const pageDocument = getPageDocument();
   const recordId =
     findRecordId(container) ||
-    findRecordId(document.body) ||
+    findRecordId(pageDocument.body) ||
     getStablePageContextKey();
   const actionType = getContainerActionType(container);
   const heading =
@@ -615,8 +691,11 @@ function getContainerActionType(container) {
 }
 
 function getElementLabel(element) {
+  const ownerDocument = element.ownerDocument || document;
+  const pageDocument = getPageDocument();
   const explicitLabel = element.id
-    ? document.querySelector(`label[for="${CSS.escape(element.id)}"]`)
+    ? ownerDocument.querySelector(`label[for="${CSS.escape(element.id)}"]`) ||
+      pageDocument.querySelector(`label[for="${CSS.escape(element.id)}"]`)
     : null;
   if (explicitLabel) {
     return normalizeWhitespace(explicitLabel.textContent || "");
@@ -679,7 +758,14 @@ function findRecordId(root) {
     return "";
   }
 
-  const urlMatch = location.pathname.match(/\/([a-zA-Z0-9]{15,18})(?:\/|$)/);
+  let pathname = location.pathname;
+  try {
+    pathname = new URL(getPageLocationHref()).pathname;
+  } catch (error) {
+    debugWarn("failed to parse page location for record id", error);
+  }
+
+  const urlMatch = pathname.match(/\/([a-zA-Z0-9]{15,18})(?:\/|$)/);
   if (urlMatch) {
     return urlMatch[1];
   }
@@ -703,7 +789,7 @@ function readElementValue(element) {
   }
 
   if (isEditableElement(element)) {
-    return element.innerText || "";
+    return normalizeEditableValue(element.innerText || element.textContent || "");
   }
 
   return "";
@@ -716,8 +802,32 @@ function writeElementValue(element, value) {
   }
 
   if (isEditableElement(element)) {
-    element.innerText = value;
+    writeContentEditableValue(element, value);
   }
+}
+
+function normalizeEditableValue(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\u200b\u200c\u200d\ufeff]/g, "")
+    .replace(/\n+$/g, "");
+}
+
+function writeContentEditableValue(element, value) {
+  const ownerDocument = element.ownerDocument || document;
+  const normalizedValue = String(value || "").replace(/\r\n?/g, "\n");
+  element.replaceChildren();
+
+  const lines = normalizedValue.split("\n");
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      element.appendChild(ownerDocument.createElement("br"));
+    }
+    if (line) {
+      element.appendChild(ownerDocument.createTextNode(line));
+    }
+  });
 }
 
 function hasUserValue(element) {

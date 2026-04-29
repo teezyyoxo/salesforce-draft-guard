@@ -15,6 +15,7 @@ This first version uses heuristics because Salesforce Lightning markup and reque
 
 - It watches `textarea`, text `input`, and `contenteditable` fields that appear related to messages, posts, calls, notes, or descriptions.
 - It derives draft keys from more stable Salesforce signals such as record id, action type, field semantics, and field position.
+- It normalizes Email iframe editors against the top Salesforce page context when that context is accessible, so saved and restored Email body keys stay aligned.
 - It marks the active composer as pending-clear when the user clicks `Send`, `Share`, `Save`, `Post`, or `Log a Call`.
 - It clears only the draft keys captured from that composer when Salesforce then issues a successful related `POST`, `PUT`, or `PATCH` request.
 
@@ -45,6 +46,13 @@ git push -u origin codex/salesforce-draft-guard
 - Options page for choosing which Salesforce actions clear drafts and which field keywords should be protected.
 - Popup panel for reviewing saved drafts in the current browser session and clearing one or all drafts manually.
 
+## Local verification
+
+```bash
+node --check content.js
+node --test test/content.test.js
+```
+
 ## Known Issues & Roadmap
 
 Use this section as a lightweight backlog until we move to GitHub Issues/Projects.
@@ -59,8 +67,8 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 
 | ID | Priority | Area | Status | Observed behavior | Repro notes | Next plan |
 | --- | --- | --- | --- | --- | --- | --- |
-| DG-001 | P1 | Post restore | Open | Restored drafts in the Post box include extra line breaks that were not in the original draft. | Seen during restore flow in Post composer. | Compare save vs restore normalization (`\n`, `\r\n`, `<br>`, block tags), then add targeted Post restore-format tests before fix. |
-| DG-002 | P0 | Email restore | Open (re-verify) | Draft keys are created/stored and persist, but drafts do not restore when clicking the Email tab/button. | Last verified failing in tests from last week; not recently re-tested. | Reproduce on current build, verify selector/timing/tab-activation behavior for Email composer, then add regression test for Email-tab restore trigger. |
+| DG-001 | P1 | Post restore | Resolved in 0.2.3 (2026-04-29) | Restored drafts in the Post box included extra line breaks that were not in the original draft. | Covered by contenteditable normalization regression test. | Re-verify manually in Salesforce Post composer and watch for rich-text edge cases. |
+| DG-002 | P0 | Email restore | Resolved in 0.2.3 (2026-04-29) | Draft keys were created/stored and persisted, but drafts did not restore when clicking the Email tab/button. | Covered by iframe-root discovery and top-page scope regression tests. | Re-verify manually in Salesforce Email tab and confirm Send clears the iframe body draft. |
 | DG-003 | P1 | Save toast UI | Open | "Draft saved locally" toast placement is inconsistent: lower-right for Post drafts and closer to center for Email drafts. | Observe toast in both Post and Email save flows; compare anchor/position logic. | Add settings controls for toast position, colors, and text size; standardize renderer so toast placement/style is consistent across Post and Email flows. |
 | DG-004 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Plan of Action > What`. | Validate field detection in Case Details context and capture stable keying signals. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
 | DG-005 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Internal Resolution Summary`. | Confirm this field’s DOM lifecycle and whether Salesforce rerenders on status transitions. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
@@ -83,11 +91,10 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 
 ### Next investigation pass
 
-1. Re-verify DG-002 on the current build and capture exact repro steps.
-2. Instrument restore-path logs for Post vs Email to compare detection and timing.
-3. Add regression tests for DG-001 and DG-002 before implementing fixes.
-4. Implement fixes and validate with a manual Salesforce smoke pass.
-5. Implement DG-003 settings and validate positioning/style behavior across Post and Email composers.
+1. Manually smoke-test DG-001 and DG-002 in Salesforce against version 0.2.3.
+2. Capture any remaining Salesforce-specific CKEditor or Post composer edge cases as fresh roadmap rows.
+3. Implement DG-003 settings and validate positioning/style behavior across Post and Email composers.
+4. Add coverage for DG-004, DG-005, and DG-006 field detection before implementing Case Details drafting.
 
 ### Definition of done (per issue)
 

@@ -1,22 +1,86 @@
 .sfdg-toast {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
   z-index: 2147483647;
-  max-width: 320px;
-  padding: 10px 12px;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  top: auto;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: var(--sfdg-toast-padding, 10px 12px);
   border-radius: 10px;
-  background: rgba(17, 24, 39, 0.94);
-  color: #f9fafb;
-  font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--sfdg-toast-background, rgba(17, 24, 39, 0.94));
+  color: var(--sfdg-toast-text, #f9fafb);
+  font: var(--sfdg-toast-font-size, 12px)/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.25);
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(var(--sfdg-toast-offset, 8px));
   transition: opacity 0.18s ease, transform 0.18s ease;
   pointer-events: none;
+  text-align: center;
+}
+
+.sfdg-toast[data-position="upper-right"] {
+  top: 16px;
+  right: 16px;
+}
+
+.sfdg-toast[data-position="upper-left"] {
+  top: 16px;
+  left: 16px;
+}
+
+.sfdg-toast[data-position="lower-left"] {
+  bottom: 16px;
+  left: 16px;
+}
+
+.sfdg-toast[data-position="lower-right"] {
+  right: 16px;
+  bottom: 16px;
+}
+
+.sfdg-toast[data-position="lower-middle"] {
+  bottom: 16px;
+  left: 50%;
+  --sfdg-toast-visible-transform: translateX(-50%);
+  transform: translate(-50%, var(--sfdg-toast-offset, 8px));
+}
+
+.sfdg-toast[data-position="absolute-middle"] {
+  top: 50%;
+  left: 50%;
+  --sfdg-toast-visible-transform: translate(-50%, -50%);
+  transform: translate(-50%, calc(-50% + var(--sfdg-toast-offset, 8px)));
+}
+
+.sfdg-toast[data-position="upper-middle"] {
+  top: 16px;
+  left: 50%;
+  --sfdg-toast-visible-transform: translateX(-50%);
+  transform: translate(-50%, -8px);
+}
+
+.sfdg-toast[data-size="small"] {
+  --sfdg-toast-font-size: 11px;
+  --sfdg-toast-padding: 8px 10px;
+}
+
+.sfdg-toast[data-size="medium"] {
+  --sfdg-toast-font-size: 12px;
+  --sfdg-toast-padding: 10px 12px;
+}
+
+.sfdg-toast[data-size="large"] {
+  --sfdg-toast-font-size: 15px;
+  --sfdg-toast-padding: 12px 16px;
+}
+
+.sfdg-toast[data-size="extra-large"] {
+  --sfdg-toast-font-size: 18px;
+  --sfdg-toast-padding: 14px 20px;
 }
 
 .sfdg-toast[data-visible="true"] {
   opacity: 1;
-  transform: translateY(0);
+  transform: var(--sfdg-toast-visible-transform, translateY(0));
 }

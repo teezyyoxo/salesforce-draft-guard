@@ -18,6 +18,7 @@ This first version uses heuristics because Salesforce Lightning markup and reque
 - It normalizes Email iframe editors against the top Salesforce page context when that context is accessible, so saved and restored Email body keys stay aligned.
 - It marks the active composer as pending-clear when the user clicks `Send`, `Share`, `Save`, `Post`, or `Log a Call`.
 - It clears only the draft keys captured from that composer when Salesforce then issues a successful related `POST`, `PUT`, or `PATCH` request.
+- It shows configurable toast notifications for save, restore, and clear events, including position, size, colors, and optional sound.
 
 That is intentionally conservative, but not perfect. Expect some tuning against your specific Salesforce UI.
 
@@ -43,13 +44,14 @@ git push -u origin codex/salesforce-draft-guard
 
 ## Features
 
-- Options page for choosing which Salesforce actions clear drafts and which field keywords should be protected.
+- Options page for choosing which Salesforce actions clear drafts, which field keywords should be protected, and how toast notifications appear.
 - Popup panel for reviewing saved drafts in the current browser session and clearing one or all drafts manually.
 
 ## Local verification
 
 ```bash
 node --check content.js
+node --check options.js
 node --test test/content.test.js
 ```
 
@@ -69,31 +71,23 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 | --- | --- | --- | --- | --- | --- | --- |
 | DG-001 | P1 | Post restore | Resolved in 0.2.3 (2026-04-29) | Restored drafts in the Post box included extra line breaks that were not in the original draft. | Covered by contenteditable normalization regression test. | Re-verify manually in Salesforce Post composer and watch for rich-text edge cases. |
 | DG-002 | P0 | Email restore | Resolved in 0.2.3 (2026-04-29) | Draft keys were created/stored and persisted, but drafts did not restore when clicking the Email tab/button. | Covered by iframe-root discovery and top-page scope regression tests. | Re-verify manually in Salesforce Email tab and confirm Send clears the iframe body draft. |
-| DG-003 | P1 | Save toast UI | Open | "Draft saved locally" toast placement is inconsistent: lower-right for Post drafts and closer to center for Email drafts. | Observe toast in both Post and Email save flows; compare anchor/position logic. | Add settings controls for toast position, colors, and text size; standardize renderer so toast placement/style is consistent across Post and Email flows. |
+| DG-003 | P1 | Save toast UI | Resolved in 0.2.4 (2026-04-29) | "Draft saved locally" toast placement was inconsistent and styling was fixed. | Added settings controls for toast position, size, colors, and optional sound effect. | Re-verify manually in Salesforce Post and Email composers with several toast positions and sizes. |
 | DG-004 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Plan of Action > What`. | Validate field detection in Case Details context and capture stable keying signals. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
 | DG-005 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Internal Resolution Summary`. | Confirm this field’s DOM lifecycle and whether Salesforce rerenders on status transitions. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
 | DG-006 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Resolution Summary`. | Confirm selector stability across Lightning record layouts/org variants. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
 
-### Planned enhancement details for DG-003
+### DG-003 toast display options
 
-- Add a settings dropdown for toast position with these values:
-  - `upper-right`
-  - `upper-left`
-  - `lower-left`
-  - `lower-right` (default)
-  - `lower-middle`
-  - `absolute-middle`
-  - `upper-middle`
-- Add user-selectable text color and background color options.
-- Add a text size option (for example: Small, Medium, Large, Extra Large).
-- Ensure toast background/padding scales with text size so readability and contrast remain consistent.
-- Keep sensible defaults, but allow user customization at any time.
+- Position: `upper-right`, `upper-left`, `lower-left`, `lower-right` (default), `lower-middle`, `absolute-middle`, or `upper-middle`.
+- Text size: Small, Medium (default), Large, or Extra Large.
+- Colors: user-selectable text and background colors.
+- Sound effect: None (default), Soft chime, Click, or Success tone.
 
 ### Next investigation pass
 
-1. Manually smoke-test DG-001 and DG-002 in Salesforce against version 0.2.3.
+1. Manually smoke-test DG-001 and DG-002 in Salesforce against version 0.2.4.
 2. Capture any remaining Salesforce-specific CKEditor or Post composer edge cases as fresh roadmap rows.
-3. Implement DG-003 settings and validate positioning/style behavior across Post and Email composers.
+3. Validate DG-003 positioning/style behavior across Post and Email composers after loading version 0.2.4.
 4. Add coverage for DG-004, DG-005, and DG-006 field detection before implementing Case Details drafting.
 
 ### Definition of done (per issue)

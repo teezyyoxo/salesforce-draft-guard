@@ -1,8 +1,16 @@
 const DEFAULT_SETTINGS = {
   protectedActions: ["send", "share", "save", "post", "log a call"],
   fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
-  showToasts: true
+  showToasts: true,
+  toastPosition: "lower-right",
+  toastSize: "medium",
+  toastTextColor: "#f9fafb",
+  toastBackgroundColor: "#111827",
+  toastSound: "none"
 };
+const TOAST_POSITIONS = ["upper-right", "upper-left", "lower-left", "lower-right", "lower-middle", "absolute-middle", "upper-middle"];
+const TOAST_SIZES = ["small", "medium", "large", "extra-large"];
+const TOAST_SOUNDS = ["none", "soft-chime", "click", "success-tone"];
 
 const ACTION_OPTIONS = [
   { value: "send", label: "Send" },
@@ -17,6 +25,11 @@ const settingsArea = chrome.storage.sync || chrome.storage.local;
 const actionsNode = document.getElementById("actions");
 const keywordsNode = document.getElementById("keywords");
 const showToastsNode = document.getElementById("showToasts");
+const toastPositionNode = document.getElementById("toastPosition");
+const toastSizeNode = document.getElementById("toastSize");
+const toastSoundNode = document.getElementById("toastSound");
+const toastTextColorNode = document.getElementById("toastTextColor");
+const toastBackgroundColorNode = document.getElementById("toastBackgroundColor");
 const statusNode = document.getElementById("status");
 const saveButton = document.getElementById("save");
 const resetButton = document.getElementById("reset");
@@ -48,6 +61,11 @@ async function loadSettings() {
 
   keywordsNode.value = settings.fieldKeywords.join("\n");
   showToastsNode.checked = settings.showToasts;
+  toastPositionNode.value = settings.toastPosition;
+  toastSizeNode.value = settings.toastSize;
+  toastSoundNode.value = settings.toastSound;
+  toastTextColorNode.value = settings.toastTextColor;
+  toastBackgroundColorNode.value = settings.toastBackgroundColor;
 }
 
 async function saveSettings() {
@@ -69,7 +87,12 @@ function collectSettings() {
       .split(/\n|,/)
       .map((value) => normalizeWhitespace(value.toLowerCase()))
       .filter(Boolean),
-    showToasts: showToastsNode.checked
+    showToasts: showToastsNode.checked,
+    toastPosition: toastPositionNode.value,
+    toastSize: toastSizeNode.value,
+    toastTextColor: toastTextColorNode.value,
+    toastBackgroundColor: toastBackgroundColorNode.value,
+    toastSound: toastSoundNode.value
   };
 }
 
@@ -77,8 +100,23 @@ function normalizeSettings(stored) {
   return {
     protectedActions: normalizeList(stored.protectedActions, DEFAULT_SETTINGS.protectedActions),
     fieldKeywords: normalizeList(stored.fieldKeywords, DEFAULT_SETTINGS.fieldKeywords),
-    showToasts: stored.showToasts !== false
+    showToasts: stored.showToasts !== false,
+    toastPosition: normalizeChoice(stored.toastPosition, TOAST_POSITIONS, DEFAULT_SETTINGS.toastPosition),
+    toastSize: normalizeChoice(stored.toastSize, TOAST_SIZES, DEFAULT_SETTINGS.toastSize),
+    toastTextColor: normalizeColor(stored.toastTextColor, DEFAULT_SETTINGS.toastTextColor),
+    toastBackgroundColor: normalizeColor(stored.toastBackgroundColor, DEFAULT_SETTINGS.toastBackgroundColor),
+    toastSound: normalizeChoice(stored.toastSound, TOAST_SOUNDS, DEFAULT_SETTINGS.toastSound)
   };
+}
+
+function normalizeChoice(value, allowedValues, fallback) {
+  const normalized = normalizeWhitespace(String(value || "").toLowerCase());
+  return allowedValues.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeColor(value, fallback) {
+  const normalized = normalizeWhitespace(String(value || ""));
+  return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : fallback;
 }
 
 function normalizeList(value, fallback) {

@@ -36,6 +36,55 @@
         </label>
       </section>
 
+      <section class="panel">
+        <h2>Toast Display</h2>
+        <p class="panel-copy">Customize where toast notifications appear and how they look.</p>
+        <div class="settings-grid">
+          <label class="stack" for="toastPosition">
+            <span>Position</span>
+            <select id="toastPosition">
+              <option value="lower-right">Lower right</option>
+              <option value="upper-right">Upper right</option>
+              <option value="upper-left">Upper left</option>
+              <option value="lower-left">Lower left</option>
+              <option value="lower-middle">Lower middle</option>
+              <option value="upper-middle">Upper middle</option>
+              <option value="absolute-middle">Middle</option>
+            </select>
+          </label>
+
+          <label class="stack" for="toastSize">
+            <span>Text size</span>
+            <select id="toastSize">
+              <option value="small">Small</option>
+              <option value="medium">Medium</option>
+              <option value="large">Large</option>
+              <option value="extra-large">Extra large</option>
+            </select>
+          </label>
+
+          <label class="stack" for="toastSound">
+            <span>Sound effect</span>
+            <select id="toastSound">
+              <option value="none">None</option>
+              <option value="soft-chime">Soft chime</option>
+              <option value="click">Click</option>
+              <option value="success-tone">Success tone</option>
+            </select>
+          </label>
+
+          <label class="stack" for="toastTextColor">
+            <span>Text color</span>
+            <input id="toastTextColor" type="color" />
+          </label>
+
+          <label class="stack" for="toastBackgroundColor">
+            <span>Background color</span>
+            <input id="toastBackgroundColor" type="color" />
+          </label>
+        </div>
+      </section>
+
       <footer class="footer">
         <button id="reset" class="button button-secondary" type="button">Reset Defaults</button>
         <button id="save" class="button" type="button">Save Settings</button>

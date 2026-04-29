@@ -157,3 +157,24 @@ test("submit clearing includes tracked Email editor keys for the same page scope
     assert.deepEqual(getDraftKeysForContainer(container, "send"), ["sfdg:draft:test"]);
   `);
 });
+
+test("toast settings normalize unknown choices and invalid colors", () => {
+  loadContentScript(`
+    const normalized = normalizeSettings({
+      protectedActions: ["send"],
+      fieldKeywords: ["email"],
+      showToasts: true,
+      toastPosition: "somewhere",
+      toastSize: "huge",
+      toastTextColor: "white",
+      toastBackgroundColor: "#123abc",
+      toastSound: "horn"
+    });
+
+    assert.equal(normalized.toastPosition, "lower-right");
+    assert.equal(normalized.toastSize, "medium");
+    assert.equal(normalized.toastTextColor, "#f9fafb");
+    assert.equal(normalized.toastBackgroundColor, "#123abc");
+    assert.equal(normalized.toastSound, "none");
+  `);
+});

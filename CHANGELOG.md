@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.2.4] - 2026-04-29
+
+### Added
+- Added options-page controls for toast position, text size, text color, background color, and optional sound effect.
+- Added configurable toast rendering in `content.js` using stored settings, validated defaults, CSS variables, and data attributes.
+- Added optional Web Audio toast sounds with `none` as the default.
+
+### Changed
+- Updated toast CSS to support upper/lower corner placement, upper/lower middle placement, centered placement, and scaled padding for each size.
+- Updated README roadmap status for DG-003.
+
+### Verified
+- Confirmed `content.js` and `options.js` pass `node --check`.
+- Confirmed `test/content.test.js` passes with `node --test`.
+
 ## [0.2.3] - 2026-04-29
 
 ### Added

@@ -10,8 +10,16 @@ const EXTENSION_CONTEXT_INVALIDATED_TEXT = "extension context invalidated";
 const DEFAULT_SETTINGS = {
   protectedActions: ["send", "share", "save", "post", "log a call"],
   fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
-  showToasts: true
+  showToasts: true,
+  toastPosition: "lower-right",
+  toastSize: "medium",
+  toastTextColor: "#f9fafb",
+  toastBackgroundColor: "#111827",
+  toastSound: "none"
 };
+const TOAST_POSITIONS = ["upper-right", "upper-left", "lower-left", "lower-right", "lower-middle", "absolute-middle", "upper-middle"];
+const TOAST_SIZES = ["small", "medium", "large", "extra-large"];
+const TOAST_SOUNDS = ["none", "soft-chime", "click", "success-tone"];
 
 const draftCache = new Map();
 const pendingActions = [];
@@ -303,7 +311,16 @@ function handleStorageChange(changes, areaName) {
     return;
   }
 
-  const relevantKeys = ["protectedActions", "fieldKeywords", "showToasts"];
+  const relevantKeys = [
+    "protectedActions",
+    "fieldKeywords",
+    "showToasts",
+    "toastPosition",
+    "toastSize",
+    "toastTextColor",
+    "toastBackgroundColor",
+    "toastSound"
+  ];
   if (!relevantKeys.some((key) => key in changes)) {
     return;
   }
@@ -1132,8 +1149,23 @@ function normalizeSettings(stored) {
   return {
     protectedActions: normalizeList(stored.protectedActions, DEFAULT_SETTINGS.protectedActions),
     fieldKeywords: normalizeList(stored.fieldKeywords, DEFAULT_SETTINGS.fieldKeywords),
-    showToasts: stored.showToasts !== false
+    showToasts: stored.showToasts !== false,
+    toastPosition: normalizeChoice(stored.toastPosition, TOAST_POSITIONS, DEFAULT_SETTINGS.toastPosition),
+    toastSize: normalizeChoice(stored.toastSize, TOAST_SIZES, DEFAULT_SETTINGS.toastSize),
+    toastTextColor: normalizeColor(stored.toastTextColor, DEFAULT_SETTINGS.toastTextColor),
+    toastBackgroundColor: normalizeColor(stored.toastBackgroundColor, DEFAULT_SETTINGS.toastBackgroundColor),
+    toastSound: normalizeChoice(stored.toastSound, TOAST_SOUNDS, DEFAULT_SETTINGS.toastSound)
   };
+}
+
+function normalizeChoice(value, allowedValues, fallback) {
+  const normalized = normalizeWhitespace(String(value || "").toLowerCase());
+  return allowedValues.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeColor(value, fallback) {
+  const normalized = normalizeWhitespace(String(value || ""));
+  return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : fallback;
 }
 
 function normalizeList(value, fallback) {
@@ -1169,7 +1201,12 @@ function showToast(message) {
   }
 
   toastNode.textContent = message;
+  toastNode.dataset.position = settings.toastPosition;
+  toastNode.dataset.size = settings.toastSize;
+  toastNode.style.setProperty("--sfdg-toast-text", settings.toastTextColor);
+  toastNode.style.setProperty("--sfdg-toast-background", hexToRgba(settings.toastBackgroundColor, 0.94));
   toastNode.dataset.visible = "true";
+  playToastSound(settings.toastSound);
 
   window.clearTimeout(showToast.hideTimerId);
   showToast.hideTimerId = window.setTimeout(() => {
@@ -1177,4 +1214,75 @@ function showToast(message) {
       toastNode.dataset.visible = "false";
     }
   }, TOAST_TTL_MS);
+}
+
+function hexToRgba(hexColor, alpha) {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(hexColor);
+  if (!match) {
+    return hexColor;
+  }
+
+  const value = match[1];
+  const red = parseInt(value.slice(0, 2), 16);
+  const green = parseInt(value.slice(2, 4), 16);
+  const blue = parseInt(value.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function playToastSound(soundName) {
+  if (soundName === "none") {
+    return;
+  }
+
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) {
+      return;
+    }
+
+    const context = new AudioContext();
+    if (context.state === "suspended" && typeof context.resume === "function") {
+      context.resume().catch(() => {});
+    }
+
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.035, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.35);
+    gain.connect(context.destination);
+
+    const tones = getToastTones(soundName);
+    tones.forEach((tone) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = tone.type;
+      oscillator.frequency.setValueAtTime(tone.frequency, context.currentTime + tone.start);
+      oscillator.connect(gain);
+      oscillator.start(context.currentTime + tone.start);
+      oscillator.stop(context.currentTime + tone.end);
+    });
+
+    window.setTimeout(() => {
+      context.close().catch(() => {});
+    }, 600);
+  } catch (error) {
+    debugWarn("toast sound failed", error);
+  }
+}
+
+function getToastTones(soundName) {
+  if (soundName === "click") {
+    return [{ frequency: 520, start: 0, end: 0.08, type: "triangle" }];
+  }
+
+  if (soundName === "success-tone") {
+    return [
+      { frequency: 660, start: 0, end: 0.12, type: "sine" },
+      { frequency: 880, start: 0.1, end: 0.28, type: "sine" }
+    ];
+  }
+
+  return [
+    { frequency: 440, start: 0, end: 0.14, type: "sine" },
+    { frequency: 660, start: 0.12, end: 0.32, type: "sine" }
+  ];
 }

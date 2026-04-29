@@ -86,6 +86,12 @@ h2 {
   gap: 12px;
 }
 
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 16px;
+}
+
 .check-card,
 .toggle {
   display: flex;
@@ -105,14 +111,33 @@ h2 {
   gap: 8px;
 }
 
-textarea {
+textarea,
+select,
+input[type="color"] {
   width: 100%;
-  padding: 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.8);
   color: var(--text);
+}
+
+textarea,
+select {
+  padding: 14px;
   font: 14px/1.5 "SFMono-Regular", Consolas, monospace;
+}
+
+select {
+  min-height: 48px;
+}
+
+input[type="color"] {
+  height: 48px;
+  padding: 6px;
+  cursor: pointer;
+}
+
+textarea {
   resize: vertical;
 }
 

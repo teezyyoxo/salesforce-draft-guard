@@ -75,6 +75,8 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 | DG-004 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Plan of Action > What`. | Validate field detection in Case Details context and capture stable keying signals. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
 | DG-005 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Internal Resolution Summary`. | Confirm this field’s DOM lifecycle and whether Salesforce rerenders on status transitions. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
 | DG-006 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Resolution Summary`. | Confirm selector stability across Lightning record layouts/org variants. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
+| DG-007 | P1 | Draft restore | Open | Restored drafts have extraneous/compounded line breaks that were not in the original draft. Restoration should be a carbon copy of the draft. | Observed in Salesforce Post composer. Verify in Email and other composer fields; check if draft-saving logic is out of tune or if restoration normalization is adding extra breaks. | Audit draft-saving and restoration logic for contenteditable and textarea fields; add regression test for exact line-break preservation. |
+| DG-008 | P1 | Draft restore | Open | Formatted text (bold, italic, underline, etc.) saved to drafts does not restore with formatting intact. | Observed in Salesforce Post composer. Verify in Email and other rich-text fields since last commit. | Audit save/restore handlers for contenteditable fields to ensure HTML structure and styling attributes are preserved; add coverage for formatted text roundtrips. |
 
 ### DG-003 toast display options
 
@@ -89,6 +91,8 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 2. Capture any remaining Salesforce-specific CKEditor or Post composer edge cases as fresh roadmap rows.
 3. Validate DG-003 positioning/style behavior across Post and Email composers after loading version 0.2.4.
 4. Add coverage for DG-004, DG-005, and DG-006 field detection before implementing Case Details drafting.
+5. Investigate DG-007: audit draft-saving and restoration logic for line-break compounding; verify draft-saving logic is capturing content correctly and restoration is not adding extra breaks.
+6. Investigate DG-008: audit save/restore handlers for rich-text formatting; ensure HTML/styling attributes are captured and restored; add test coverage for bold, italic, underline, and other formatting roundtrips.
 
 ### Definition of done (per issue)
 

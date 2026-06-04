@@ -20,14 +20,17 @@
       return false;
     }
 
+    // Match only the specific save/send resources for the composers we support, not the
+    // broad "/services/data/" base, so routine background reads/polls don't clear a draft
+    // the user hasn't actually submitted.
     return [
-      "/services/data/",
-      "/chatter/",
-      "/feed-elements",
-      "/emailMessages/",
-      "/tasks/",
-      "/events/",
-      "/notes/"
+      "/chatter/feed-elements",
+      "/connect/records",
+      "/emailMessages",
+      "/email/simple",
+      "/tasks",
+      "/events",
+      "/notes"
     ].some((fragment) => url.includes(fragment));
   };
 

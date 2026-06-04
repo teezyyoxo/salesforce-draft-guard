@@ -4,6 +4,143 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.3.3] - 2026-06-04
+
+Follow-up to 0.3.2 from live testing. Rich text, line breaks, and bold now restore correctly
+in the Post composer. This release fixes a deferred-restore case discovered while switching
+publisher tabs.
+
+### Fixed
+- Fixed a saved Post draft not restoring when, after a refresh, the Email tab is opened before
+  Post. The Post composer is hidden (inactive publisher tab) at that moment, and restoring into
+  a hidden editor silently fails — but the element was still marked handled, so it never
+  restored when Post was shown again. Restore now defers (without marking) while a field is not
+  rendered, and retries when the field is focused or re-scanned once visible.
+
+### Added
+- Added a `focusin` listener that retries restore when a draft field gains focus, covering
+  composers that Salesforce shows/hides by toggling visibility without a DOM mutation.
+- Added `isElementRenderable` (client-rect based) and a regression test for it.
+
+### Verified
+- Confirmed `content.js` passes `node --check`.
+- Confirmed `test/content.test.js` passes with `node --test` (13 tests).
+
+## [0.3.2] - 2026-06-04
+
+Follow-up to 0.3.1 from live testing: the Post delete bug is confirmed fixed and Post submits
+the restored content, but Email drafts were saved yet never restored, and formatting/line
+breaks still did not come back in Post.
+
+### Fixed
+- Fixed Email drafts saving but never restoring. The Email body (Salesforce/CKEditor) exposes
+  per-load identifiers (instance ids, generated `title`/`aria-label`) that changed on every
+  page load, so the key computed at save time did not match the key at restore time and the
+  lookup silently missed. Email now uses a canonical key derived only from stable signals
+  (record context + a fixed field id), so save and restore always agree.
+- Reworked rich-text restore to insert through a synthetic `paste` carrying both `text/html`
+  and `text/plain`. Quill (Post) and CKEditor (Email) ignore a direct `innerHTML` write and
+  reconcile against their own model, which dropped formatting and line breaks; routing through
+  the clipboard pipeline lets the editor convert the HTML into its model with formatting and
+  breaks intact. A verified direct-DOM write remains as a fallback (only when the field is
+  still empty, so it can never duplicate content).
+
+### Added
+- Added diagnostics (visible in the console with the `[SFDG]` prefix): the canonical Email
+  draft key is logged on save and restore, the captured HTML length is logged on Email save,
+  and the restore path (paste applied vs. DOM fallback) is logged.
+- Added a regression test asserting the Email key is identical across different CKEditor
+  instance identifiers.
+
+### Changed (console hygiene)
+- Narrowed `isEmailEditorElement` to the editable Email body itself. Its previous
+  `closest(".cke_editor_editor")` clause matched every descendant of the CKEditor wrapper
+  (toolbar buttons, layout divs), which logged a `[SFDG] email input not matched to draft
+  element` warning on input events that legitimately are not draft fields.
+- Removed per-event and per-save debug logging from the input handler, iframe scan, and
+  metadata derivation; the remaining diagnostics are low-frequency (bind, save, restore).
+- Set `DEBUG_ENABLED` to `false` by default so the console stays clean. Genuine failures are
+  still reported via `console.error`. Flip the flag at the top of `content.js` to re-enable
+  `[SFDG]` diagnostics when investigating.
+
+### Notes
+- Trade-off: all Email composers within the same record context now share one canonical draft
+  key. Distinct concurrent Email drafts on the same record would collide; this is preferable to
+  the previous total restore failure and can be refined later if needed.
+
+### Verified
+- Confirmed `content.js` and `injected.js` pass `node --check`.
+- Confirmed `test/content.test.js` passes with `node --test` (12 tests).
+
+## [0.3.1] - 2026-06-04
+
+Follow-up to 0.3.0 fixing a critical restore regression and adding rich-text support, based
+on manual testing in a live Salesforce org.
+
+### Fixed
+- Fixed a critical regression where, after a draft was restored, the field could only be
+  added to — backspace/delete appeared to do nothing. The document observer was re-running
+  restore continuously and the "current is a subset of the draft" heuristic re-injected the
+  full draft on every deletion. Restore now happens at most once per editor element and only
+  into an empty field, so edits and deletions are never undone.
+- Fixed lost line breaks on restore (regression from the 0.3.0 `execCommand("insertText")`
+  path, which collapsed embedded newlines).
+
+### Added
+- Added rich-text draft support (DG-008): saves now capture the editor's HTML in addition to
+  plain text, and restores reapply it (sanitized) so bold/italic/links and exact line breaks
+  come back. Plain-text fallback is retained for `textarea`/`input` and legacy drafts.
+- Added a lightweight HTML sanitizer (`sanitizeDraftHtml`) that strips scripts, frames,
+  inline event handlers, and `javascript:` URLs before re-injecting a saved draft.
+- Added regression tests for empty-only restore and HTML-preferred restore.
+
+### Changed
+- Removed the `execCommand`/synthetic-paste restore path in favor of HTML/text DOM restore
+  plus a synthetic input event for framework sync.
+
+### Verified
+- Confirmed `content.js` and `injected.js` pass `node --check`.
+- Confirmed `test/content.test.js` passes with `node --test` (11 tests).
+
+## [0.3.0] - 2026-06-04
+
+This release targets the two core failures observed in 0.2.4 — drafts that never
+restored, and drafts that restored with extra line breaks — for the Chatter Post and
+Email composers. Rich-text formatting preservation (DG-008) and the Case Details fields
+(DG-004/5/6) remain deferred to the roadmap.
+
+### Fixed
+- Fixed unstable draft keys (DG-002 root cause). `getFieldKey` no longer mixes volatile DOM
+  position into the key when a field exposes intrinsic identity (label/placeholder/name/
+  title), and `getContainerActionType` now classifies Post/Email structurally instead of
+  from mutable `textContent`. Keys are frozen on the element/container so they cannot drift
+  within a session and match across refreshes — drafts now restore reliably.
+- Fixed line-break compounding on restore (DG-007). Restores now route through the editor's
+  own input handling (`execCommand("insertText")`, with a synthetic paste and a direct DOM
+  rebuild as fallbacks) so Quill/CKEditor keep their model in sync and stop re-normalizing
+  the restored markup into extra blank lines.
+- Added a restore guard so a programmatic restore (and the editor's follow-up mutations) no
+  longer trigger a redundant save through the input listeners or the editor MutationObserver,
+  which previously fed the line-break compounding back into storage.
+- Routed the CKEditor Email body to a stable, frame-local container so its draft key no
+  longer collapses onto the top page body.
+
+### Changed
+- Tightened the injected network hook's relevance filter to the specific Post/Email save
+  endpoints instead of the broad `/services/data/` base, reducing the chance that an
+  unrelated background request clears an unsent draft.
+- Throttled the "Draft saved locally" toast to the first save per field per session so it no
+  longer flashes on every pause in typing.
+
+### Added
+- Added regression tests for draft-key stability under text/DOM mutation, idempotent
+  contenteditable round-trips, and the restore guard suppressing redundant saves.
+
+### Verified
+- Confirmed `content.js`, `injected.js`, `options.js`, `popup.js`, and `background.js` pass
+  `node --check`.
+- Confirmed `test/content.test.js` passes with `node --test` (9 tests).
+
 ## [0.2.4] - 2026-04-29
 
 ### Added

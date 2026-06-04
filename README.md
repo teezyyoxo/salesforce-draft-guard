@@ -55,6 +55,13 @@ node --check options.js
 node --test test/content.test.js
 ```
 
+## Debug logging
+
+`content.js` ships with `DEBUG_ENABLED = false` so the DevTools console stays clean during
+normal use (genuine failures are still reported via `console.error`). To investigate draft
+save/restore behavior, set `DEBUG_ENABLED = true` at the top of `content.js`, reload the
+extension, and watch for `[SFDG]` messages (draft keys, save/restore paths, iframe binding).
+
 ## Known Issues & Roadmap
 
 Use this section as a lightweight backlog until we move to GitHub Issues/Projects.
@@ -70,13 +77,17 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 | ID | Priority | Area | Status | Observed behavior | Repro notes | Next plan |
 | --- | --- | --- | --- | --- | --- | --- |
 | DG-001 | P1 | Post restore | Resolved in 0.2.3 (2026-04-29) | Restored drafts in the Post box included extra line breaks that were not in the original draft. | Covered by contenteditable normalization regression test. | Re-verify manually in Salesforce Post composer and watch for rich-text edge cases. |
-| DG-002 | P0 | Email restore | Resolved in 0.2.3 (2026-04-29) | Draft keys were created/stored and persisted, but drafts did not restore when clicking the Email tab/button. | Covered by iframe-root discovery and top-page scope regression tests. | Re-verify manually in Salesforce Email tab and confirm Send clears the iframe body draft. |
+| DG-002 | P0 | Email restore | Resolved in 0.3.2 (2026-06-04) | Email drafts saved but never restored. Root cause: the CKEditor Email body exposes per-load identifiers (instance ids, generated title/aria-label) that changed every page load, so the save-time key did not match the restore-time key. | Fixed with a canonical Email key (record context + fixed field id); covered by a regression test asserting key identity across CKEditor instance ids. | Re-verify manually in the Salesforce Email tab and confirm Send clears the Email body draft. |
 | DG-003 | P1 | Save toast UI | Resolved in 0.2.4 (2026-04-29) | "Draft saved locally" toast placement was inconsistent and styling was fixed. | Added settings controls for toast position, size, colors, and optional sound effect. | Re-verify manually in Salesforce Post and Email composers with several toast positions and sizes. |
 | DG-004 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Plan of Action > What`. | Validate field detection in Case Details context and capture stable keying signals. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
 | DG-005 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Internal Resolution Summary`. | Confirm this field’s DOM lifecycle and whether Salesforce rerenders on status transitions. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
 | DG-006 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Resolution Summary`. | Confirm selector stability across Lightning record layouts/org variants. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
-| DG-007 | P1 | Draft restore | Open | Restored drafts have extraneous/compounded line breaks that were not in the original draft. Restoration should be a carbon copy of the draft. | Observed in Salesforce Post composer. Verify in Email and other composer fields; check if draft-saving logic is out of tune or if restoration normalization is adding extra breaks. | Audit draft-saving and restoration logic for contenteditable and textarea fields; add regression test for exact line-break preservation. |
-| DG-008 | P1 | Draft restore | Open | Formatted text (bold, italic, underline, etc.) saved to drafts does not restore with formatting intact. | Observed in Salesforce Post composer. Verify in Email and other rich-text fields since last commit. | Audit save/restore handlers for contenteditable fields to ensure HTML structure and styling attributes are preserved; add coverage for formatted text roundtrips. |
+| DG-007 | P1 | Draft restore | Resolved in 0.3.0 (2026-06-04) | Restored drafts had extraneous/compounded line breaks not in the original draft. | Root cause was a feedback loop: a direct DOM rebuild was re-normalized by Quill/CKEditor, then re-saved by the editor observer. Fixed by routing restores through the editor's input handling and adding a restore guard; covered by an idempotent round-trip regression test. | Re-verify manually in the Salesforce Post and Email composers for exact line-break preservation. |
+| DG-008 | P1 | Draft restore | In progress (0.3.2, 2026-06-04) | Formatted text (bold, italic) and line breaks did not restore. A direct innerHTML write was dropped by Quill/CKEditor (they reconcile against their own model). | Saves capture sanitized HTML; restore now injects via a synthetic paste (text/html + text/plain) so the editor's clipboard pipeline preserves formatting and breaks, with a verified DOM-write fallback. | Re-verify manually in Post and Email that bold/italic/links and line breaks restore, and that Send/Post submits the restored content. If formatting still drops, capture the `[SFDG]` console logs (restore path + html length). |
+| DG-009 | P2 | Toast UI | Planned | Place the save/restore toast closer to the composer — ideally embedded to the left of the "Share"/"Send" button rather than floating at a screen corner. | Toast position is configurable today via the extension's options page (not `chrome://extensions`), but only to fixed screen anchors. | Add an "anchored to composer" toast mode that positions relative to the active composer's action bar. |
+| DG-010 | P1 | Draft restore | Open | After a restored draft, backspace/delete appeared to do nothing (could only add text). | Resolved in 0.3.1 by restoring at most once per editor element and only into empty fields; tracked here for manual re-verification. | Re-verify in Post and Email that deleting/backspacing through restored content works normally. |
+| DG-011 | P1 | Draft restore | Resolved in 0.3.3 (2026-06-04) | A saved Post draft did not restore if the Email tab was opened before Post after a refresh. | The Post composer is hidden when Email is active; restoring into a hidden editor failed but the element was marked handled. Restore now defers while a field is not rendered and retries on focus/re-scan. | Re-verify: save a Post draft, refresh, open Email, then return to Post and confirm the draft restores. |
+| DG-012 | P1 | Email composer | Open (testing) | End-to-end Email box behavior is not yet fully verified in a live org. | Canonical Email key (0.3.2), rich-text restore (0.3.2), and deferred-restore (0.3.3) all land but Email has not had a full manual pass. | Verify: type a formatted, multi-line Email draft, refresh, confirm restore (formatting + breaks), confirm Send clears the draft, and confirm Send submits the restored body (not stale/empty). Capture `[SFDG]` logs if anything fails. |
 
 ### DG-003 toast display options
 
@@ -87,12 +98,16 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 
 ### Next investigation pass
 
-1. Manually smoke-test DG-001 and DG-002 in Salesforce against version 0.2.4.
-2. Capture any remaining Salesforce-specific CKEditor or Post composer edge cases as fresh roadmap rows.
-3. Validate DG-003 positioning/style behavior across Post and Email composers after loading version 0.2.4.
+1. Manually smoke-test DG-002, DG-007, DG-008, and DG-010 in Salesforce against version 0.3.2:
+   in the Post and Email composers, type multi-line and formatted (bold/italic) text, refresh
+   or re-render, and confirm an exact restore — including formatting and line breaks, with no
+   extra blank lines — then confirm you can freely backspace/delete the restored content, and
+   that Send/Post clears the draft and submits the restored content (not stale/empty content).
+2. Confirm a background Salesforce request (list refresh, navigation) does not clear an unsent
+   draft now that the network relevance filter is narrower.
+3. Capture any remaining Salesforce-specific CKEditor or Post composer edge cases as fresh roadmap rows.
 4. Add coverage for DG-004, DG-005, and DG-006 field detection before implementing Case Details drafting.
-5. Investigate DG-007: audit draft-saving and restoration logic for line-break compounding; verify draft-saving logic is capturing content correctly and restoration is not adding extra breaks.
-6. Investigate DG-008: audit save/restore handlers for rich-text formatting; ensure HTML/styling attributes are captured and restored; add test coverage for bold, italic, underline, and other formatting roundtrips.
+5. DG-009: prototype a composer-anchored toast mode positioned near the action bar.
 
 ### Definition of done (per issue)
 

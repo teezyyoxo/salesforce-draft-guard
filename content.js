@@ -4,7 +4,10 @@ const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
 const DRAFT_ELEMENT_SELECTOR = "textarea, input[type='text'], [contenteditable='true'], body[contenteditable='true'], .cke_editable";
 const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputContainer textarea, .publisherInputContainer input[type='text'], .publisherInputContainer [contenteditable], body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], [role='textbox'][contenteditable='true'][aria-label='Email Body'], .cke_editable, .cke_wysiwyg_frame";
-const DEBUG_ENABLED = true;
+// Flip to true to surface [SFDG] diagnostics in the DevTools console (draft keys, save/
+// restore paths, iframe binding). Off by default to keep the console clean; genuine failures
+// are still reported via console.error regardless of this flag.
+const DEBUG_ENABLED = false;
 const DEBUG_PREFIX = "[SFDG]";
 const EXTENSION_CONTEXT_INVALIDATED_TEXT = "extension context invalidated";
 const DEFAULT_SETTINGS = {
@@ -21,12 +24,17 @@ const TOAST_POSITIONS = ["upper-right", "upper-left", "lower-left", "lower-right
 const TOAST_SIZES = ["small", "medium", "large", "extra-large"];
 const TOAST_SOUNDS = ["none", "soft-chime", "click", "success-tone"];
 
+const RESTORE_GUARD_RELEASE_MS = 150;
+
 const draftCache = new Map();
 const pendingActions = [];
 const trackedEditors = new Map();
 const saveTimers = new WeakMap();
 const observedEditors = new WeakSet();
 const observedFrames = new WeakSet();
+const restoringNow = new WeakSet();
+const restoredEditors = new WeakSet();
+const toastedFieldKeys = new Set();
 const sessionStorageArea = chrome.storage.session;
 const localStorageArea = chrome.storage.local;
 const settingsArea = chrome.storage.sync || chrome.storage.local;
@@ -149,16 +157,27 @@ function isEditableElement(value) {
   return Boolean(value.isContentEditable) || String(value.getAttribute("contenteditable") || "").toLowerCase() === "true";
 }
 
+function isElementRenderable(element) {
+  // Treat an element as restorable only when it is actually laid out. display:none and
+  // detached nodes report no client rects; if the API is unavailable (unit tests) assume true.
+  if (isElementNode(element) && typeof element.getClientRects === "function") {
+    return element.getClientRects().length > 0;
+  }
+  return true;
+}
+
 function isEmailEditorElement(element) {
   if (!isElementNode(element)) {
     return false;
   }
 
+  // Identify only the editable Email body itself. The previous `closest(".cke_editor_editor")`
+  // clause matched every descendant of the CKEditor wrapper (toolbar buttons, layout divs),
+  // which produced a console warning on input events that legitimately are not draft fields.
   return (
     element.getAttribute("aria-label") === "Email Body" ||
     element.getAttribute("title") === "Email Body" ||
-    element.classList.contains("cke_editable") ||
-    Boolean(element.closest(".cke_editor_editor, .content.iframe-parent"))
+    element.classList.contains("cke_editable")
   );
 }
 
@@ -212,25 +231,12 @@ function getStablePageContextKey() {
   }
 }
 
-function shouldRestoreOverCurrentValue(currentValue, draftValue) {
-  const current = normalizeWhitespace(currentValue || "");
-  const draft = normalizeWhitespace(draftValue || "");
-
-  if (!current) {
-    return true;
-  }
-
-  if (!draft || current === draft) {
-    return false;
-  }
-
-  // Email editors are commonly pre-populated with signature/quoted content.
-  // If the current content appears to be a subset of the saved draft, prefer restoring the draft.
-  if (draft.includes(current) && draft.length > current.length) {
-    return true;
-  }
-
-  return false;
+function shouldRestoreOverCurrentValue(currentValue) {
+  // Only restore into a genuinely empty field. The previous "current is a subset of the
+  // draft" heuristic caused the editor to re-inject the full draft on every backspace
+  // (the field became a prefix of the draft, so it kept snapping back). Combined with the
+  // one-restore-per-element guard in restoreDraft, this lets the user freely edit and delete.
+  return !normalizeWhitespace(currentValue || "");
 }
 
 function collectDraftEditors(root) {
@@ -301,9 +307,25 @@ function bindGlobalListeners() {
   document.addEventListener("keyup", handleInputEvent, true);
   document.addEventListener("paste", handleInputEvent, true);
   document.addEventListener("blur", handleInputEvent, true);
+  document.addEventListener("focusin", handleFocusEvent, true);
   document.addEventListener("click", handleClickEvent, true);
   window.addEventListener("message", handleWindowMessage);
   chrome.storage.onChanged.addListener(handleStorageChange);
+}
+
+function handleFocusEvent(event) {
+  // Retry restore when the user focuses a draft field. This covers composers that Salesforce
+  // hides/shows by toggling visibility (e.g. switching publisher tabs) without a DOM mutation
+  // that would otherwise trigger a scan, so a deferred restore still happens once the field is
+  // actually shown and interactable.
+  const target = getDraftElement(event.target);
+  if (!target) {
+    return;
+  }
+
+  restoreDraft(target).catch((error) => {
+    console.error("Salesforce Draft Guard failed to restore a draft on focus.", error);
+  });
 }
 
 function handleStorageChange(changes, areaName) {
@@ -356,35 +378,9 @@ function startObserver() {
 }
 
 function handleInputEvent(event) {
-  if (isEmailEditorElement(event.target)) {
-    debugLog("email input event", {
-      type: event.type,
-      targetTag: event.target.tagName,
-      targetClass: event.target.className || "",
-      ariaLabel: event.target.getAttribute && event.target.getAttribute("aria-label"),
-      title: event.target.getAttribute && event.target.getAttribute("title")
-    });
-  }
-
   const target = getDraftElement(event.target);
   if (!target) {
-    if (isEmailEditorElement(event.target)) {
-      debugWarn("email input not matched to draft element", {
-        type: event.type,
-        targetTag: event.target.tagName,
-        targetClass: event.target.className || ""
-      });
-    }
     return;
-  }
-
-  if (isEmailEditorElement(target)) {
-    debugLog("email matched draft element", {
-      type: event.type,
-      tag: target.tagName,
-      className: target.className || "",
-      valueLength: readElementValue(target).length
-    });
   }
 
   scheduleSave(target);
@@ -438,6 +434,14 @@ function handleWindowMessage(event) {
 }
 
 function scheduleSave(element) {
+  // While we are programmatically restoring a draft, the write (and the editor's own
+  // re-normalization of it) must not be treated as fresh user input, or it would re-save
+  // the restored value and compound line breaks. Both the input listeners and the editor
+  // MutationObserver funnel through here, so this single guard covers all save triggers.
+  if (restoringNow.has(element)) {
+    return;
+  }
+
   const priorTimer = saveTimers.get(element);
   if (priorTimer) {
     clearTimeout(priorTimer);
@@ -454,6 +458,7 @@ function scheduleSave(element) {
 
 async function persistDraft(element) {
   const value = readElementValue(element);
+  const html = readElementHtml(element);
   const meta = getDraftMetadata(element);
   if (isEmailEditorElement(element)) {
     debugLog("persistDraft called for email element", {
@@ -468,11 +473,13 @@ async function persistDraft(element) {
   if (!value.trim()) {
     await removeDraftKeys([meta.storageKey]);
     draftCache.delete(meta.storageKey);
+    toastedFieldKeys.delete(meta.storageKey);
     return;
   }
 
   const draft = {
     value,
+    html,
     updatedAt: Date.now(),
     url: getPageLocationHref(),
     title: getPageTitle(),
@@ -490,10 +497,17 @@ async function persistDraft(element) {
       storageKey: meta.storageKey,
       scope: meta.scope,
       fieldKey: meta.fieldKey,
-      valueLength: value.length
+      valueLength: value.length,
+      htmlLength: html ? html.length : 0
     });
   }
-  showToast("Draft saved locally.");
+
+  // Only announce the first save for a given field per session; subsequent debounced
+  // autosaves stay silent so the toast does not flash on every pause in typing.
+  if (!toastedFieldKeys.has(meta.storageKey)) {
+    toastedFieldKeys.add(meta.storageKey);
+    showToast("Draft saved locally.");
+  }
 }
 
 function scanAndRestore(root) {
@@ -503,15 +517,10 @@ function scanAndRestore(root) {
 
   if (queryRoot) {
     if (isIframeElement(queryRoot) && queryRoot.matches("iframe.cke_wysiwyg_frame[title='Email Body']")) {
-      debugLog("email iframe discovered as root", { href: getPageLocationHref() });
       attachEmailFrameObserver(queryRoot);
     }
 
-    const emailFrames = queryRoot.querySelectorAll("iframe.cke_wysiwyg_frame[title='Email Body']");
-    if (emailFrames.length) {
-      debugLog("email iframe(s) discovered", { count: emailFrames.length, href: location.href });
-    }
-    emailFrames.forEach((frame) => {
+    queryRoot.querySelectorAll("iframe.cke_wysiwyg_frame[title='Email Body']").forEach((frame) => {
       attachEmailFrameObserver(frame);
     });
   }
@@ -529,6 +538,14 @@ function scanAndRestore(root) {
 }
 
 async function restoreDraft(element) {
+  // Each editor element gets at most one restore attempt in its lifetime. Salesforce
+  // re-renders produce brand-new elements (which are not in this set, so they restore),
+  // while a persisting element being edited is never re-injected — that is what lets the
+  // user delete/backspace freely instead of having the draft snap back.
+  if (restoredEditors.has(element)) {
+    return;
+  }
+
   const meta = getDraftMetadata(element);
   if (!meta) {
     if (isEmailEditorElement(element)) {
@@ -551,6 +568,8 @@ async function restoreDraft(element) {
   }
 
   if (!draft || !draft.value) {
+    // No draft yet (storage may still be warming up); leave the element un-marked so a
+    // later scan can retry once a draft exists.
     if (isEmailEditorElement(element)) {
       debugLog("email restore skipped", {
         reason: "no-saved-draft",
@@ -560,26 +579,42 @@ async function restoreDraft(element) {
     return;
   }
 
-  if (!shouldRestoreOverCurrentValue(currentValue, draft.value)) {
+  if (!shouldRestoreOverCurrentValue(currentValue)) {
+    // The field already has content; never overwrite it. Mark handled so we don't keep
+    // re-checking and never fight the user's edits.
+    restoredEditors.add(element);
     if (isEmailEditorElement(element)) {
       debugLog("email restore skipped", {
-        reason: "current-value-not-eligible",
+        reason: "field-not-empty",
         currentLength: currentValue.length,
-        draftLength: draft.value.length,
         key: meta.storageKey
       });
     }
     return;
   }
 
-  writeElementValue(element, draft.value);
-  dispatchSyntheticInput(element);
+  if (!isElementRenderable(element)) {
+    // The field is empty and eligible, but not currently shown/interactable (e.g. an inactive
+    // publisher tab). Restoring into a hidden editor silently fails, so defer WITHOUT marking;
+    // the focus listener and later scans retry once the field is actually visible.
+    if (isEmailEditorElement(element)) {
+      debugLog("email restore deferred", { reason: "not-rendered", key: meta.storageKey });
+    }
+    return;
+  }
+
+  // Mark handled now so we never re-restore over the user's subsequent edits, even if they
+  // later clear the field entirely.
+  restoredEditors.add(element);
+
+  writeElementValueGuarded(element, draft);
   trackDraftEditor(element, meta);
   if (isEmailEditorElement(element)) {
     debugLog("email draft restored", {
       key: meta.storageKey,
       currentLength: currentValue.length,
-      draftLength: draft.value.length
+      draftLength: draft.value.length,
+      hasHtml: Boolean(draft.html)
     });
   }
   showToast("Recovered a local draft.");
@@ -590,7 +625,10 @@ async function clearDraftKeys(storageKeys) {
     return;
   }
 
-  storageKeys.forEach((key) => draftCache.delete(key));
+  storageKeys.forEach((key) => {
+    draftCache.delete(key);
+    toastedFieldKeys.delete(key);
+  });
   await removeDraftKeys(storageKeys);
 }
 
@@ -631,10 +669,22 @@ function getDraftMetadata(element) {
   }
 
   const container = getContainer(element);
-  const scope = getContainerScope(container);
   const actionType = getContainerActionType(container);
   const label = getElementLabel(element);
-  const fieldKey = getFieldKey(element, container);
+
+  let scope;
+  let fieldKey;
+  if (actionType === "email" || isEmailEditorElement(element)) {
+    // The Salesforce/CKEditor Email body exposes per-load identifiers (instance ids, generated
+    // titles/aria-labels) that change on every page load, which broke key matching between save
+    // and restore. Derive a canonical key from stable signals only — the record context plus a
+    // fixed field id — so the Email draft restores reliably.
+    scope = hashKey(`${getRecordIdForScope(container)}::email`);
+    fieldKey = hashKey("email-body");
+  } else {
+    scope = getContainerScope(container);
+    fieldKey = getFieldKey(element, container);
+  }
 
   return {
     scope,
@@ -646,51 +696,104 @@ function getDraftMetadata(element) {
 }
 
 function getContainer(element) {
-  return (
-    element.closest(
-      "[role='dialog'], article, section, form, .forceChatterPublisher, .oneRecordActionWrapper, .slds-modal, .ql-container, .publisherInputContainer, .cke_contents, .cke_inner"
-    ) || getPageDocument().body || document.body
+  const structural = element.closest(
+    "[role='dialog'], article, section, form, .forceChatterPublisher, .oneRecordActionWrapper, .slds-modal, .ql-container, .publisherInputContainer, .cke_contents, .cke_inner"
   );
+  if (structural) {
+    return structural;
+  }
+
+  // The CKEditor Email body lives in its own iframe with no matching ancestor in that
+  // document. Use the editor element itself so its draft key stays stable and frame-local
+  // instead of collapsing onto the top page body.
+  if (isEmailEditorElement(element)) {
+    return element;
+  }
+
+  return getPageDocument().body || document.body;
+}
+
+function getRecordIdForScope(container) {
+  // The record id comes from the URL first (stable across reloads) and only falls back to a
+  // DOM lookup or the stable page context. It never uses per-load DOM identifiers.
+  const pageDocument = getPageDocument();
+  return findRecordId(container) || findRecordId(pageDocument.body) || getStablePageContextKey();
 }
 
 function getContainerScope(container) {
-  const pageDocument = getPageDocument();
-  const recordId =
-    findRecordId(container) ||
-    findRecordId(pageDocument.body) ||
-    getStablePageContextKey();
+  if (container.dataset && container.dataset.sfdgScope) {
+    return container.dataset.sfdgScope;
+  }
+
+  const recordId = getRecordIdForScope(container);
   const actionType = getContainerActionType(container);
   const heading =
     findText(container, "h1, h2, h3, [role='heading'], .title, .slds-text-heading_small") ||
-    container.getAttribute("aria-label") ||
+    (container.getAttribute && container.getAttribute("aria-label")) ||
     "";
 
-  return hashKey(`${recordId}::${actionType}::${heading}`);
+  const scope = hashKey(`${recordId}::${actionType}::${heading}`);
+  if (container.dataset) {
+    container.dataset.sfdgScope = scope;
+  }
+  return scope;
 }
 
 function getFieldKey(element, container) {
+  if (element.dataset && element.dataset.sfdgFieldKey) {
+    return element.dataset.sfdgFieldKey;
+  }
+
   const label = getElementLabel(element);
   const placeholder = normalizeWhitespace(element.getAttribute("placeholder") || "");
   const name = normalizeWhitespace(element.getAttribute("name") || "");
   const title = normalizeWhitespace(element.getAttribute("title") || "");
   const inputRole = inferFieldRole(element, container);
-  const fieldPosition = getCandidateIndex(element, container);
+  // DOM position is volatile as Salesforce adds/removes sibling nodes, so only use it to
+  // disambiguate fields that expose no intrinsic identity. The key is then frozen on the
+  // element so it cannot drift within a session, and the intrinsic signals keep it stable
+  // across refreshes.
+  const hasIntrinsicIdentity = Boolean(label || placeholder || name || title);
+  const fieldPosition = hasIntrinsicIdentity ? "" : getCandidateIndex(element, container);
 
-  return hashKey(`${inputRole}::${label}::${placeholder}::${name}::${title}::${fieldPosition}`);
+  const fieldKey = hashKey(`${inputRole}::${label}::${placeholder}::${name}::${title}::${fieldPosition}`);
+  if (element.dataset) {
+    element.dataset.sfdgFieldKey = fieldKey;
+  }
+  return fieldKey;
 }
 
 function getContainerActionType(container) {
-  const text = normalizeWhitespace(container.textContent || "").toLowerCase();
+  if (container.dataset && container.dataset.sfdgActionType) {
+    return container.dataset.sfdgActionType;
+  }
 
-  if (container.matches(".publisherInputContainer") || container.querySelector(".publisherInputContainer")) {
+  const actionType = resolveContainerActionType(container);
+  if (container.dataset) {
+    container.dataset.sfdgActionType = actionType;
+  }
+  return actionType;
+}
+
+function resolveContainerActionType(container) {
+  // Prefer stable structural signals over mutable text content so the action type (and
+  // therefore the draft scope) does not flip as the user types or Salesforce re-renders.
+  const matches = (selector) => Boolean(container.matches && container.matches(selector));
+  const has = (selector) => Boolean(container.querySelector && container.querySelector(selector));
+
+  if (matches(".publisherInputContainer") || has(".publisherInputContainer")) {
     return "post";
   }
   if (
-    container.matches("body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], .cke_editable, .cke_wysiwyg_frame") ||
-    text.includes("email body")
+    matches("body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], .cke_editable, .cke_wysiwyg_frame") ||
+    has(".cke_editable, .cke_wysiwyg_frame, [aria-label='Email Body'], [title='Email Body']") ||
+    (container.getAttribute && container.getAttribute("aria-label") === "Email Body")
   ) {
     return "email";
   }
+
+  // Text-based classification is a last resort only.
+  const text = normalizeWhitespace(container.textContent || "").toLowerCase();
   if (text.includes("log a call")) {
     return "log-a-call";
   }
@@ -812,14 +915,139 @@ function readElementValue(element) {
   return "";
 }
 
-function writeElementValue(element, value) {
+function readElementHtml(element) {
+  // Capture the editor's own markup for rich surfaces (Post/Email) so bold/italic/links and
+  // exact line breaks survive a restore. Plain text inputs have no meaningful HTML.
+  if (isEditableElement(element) && typeof element.innerHTML === "string") {
+    return element.innerHTML || undefined;
+  }
+
+  return undefined;
+}
+
+function writeElementValueGuarded(element, draft) {
+  // Mark the element as restoring before any DOM mutation so the save triggers fired by the
+  // write, the synthetic input, and the editor's own follow-up mutations are all suppressed.
+  restoringNow.add(element);
+
+  // Rich contenteditable editors (Quill for Post, CKEditor for Email) ignore a direct
+  // innerHTML write — they reconcile against their own model and drop foreign markup, which
+  // is why formatting and line breaks were lost. Insert through a synthetic paste so the
+  // editor's clipboard pipeline converts the HTML into its model with formatting intact.
+  if (isEditableElement(element) && !isTextInputElement(element)) {
+    restoreEditableDraft(element, draft);
+    return;
+  }
+
+  try {
+    writeElementValue(element, draft);
+    dispatchSyntheticInput(element);
+  } catch (error) {
+    debugWarn("restore write failed", error);
+  }
+  releaseRestoreGuard(element);
+}
+
+function releaseRestoreGuard(element) {
+  // Release after input events and MutationObserver microtasks have settled so a restore
+  // never schedules a redundant save. setTimeout (a macrotask) runs after those microtasks.
+  window.setTimeout(() => {
+    restoringNow.delete(element);
+  }, RESTORE_GUARD_RELEASE_MS);
+}
+
+function restoreEditableDraft(element, draft) {
+  const ownerDocument = element.ownerDocument || document;
+  const pasteHandled = insertViaPaste(element, ownerDocument, draft);
+  dispatchSyntheticInput(element);
+
+  if (isEmailEditorElement(element)) {
+    debugLog("email restore: paste dispatched", { pasteHandled, hasHtml: Boolean(draft && draft.html) });
+  }
+
+  // Editors apply pasted content asynchronously, so verify shortly after. Fall back to a
+  // direct DOM write only if the field is still empty — restore only targets empty fields,
+  // so this can never duplicate content.
+  window.setTimeout(() => {
+    try {
+      const current = readElementValue(element);
+      if (!current || !current.trim()) {
+        debugLog("restore: paste produced no content, using DOM write fallback", {
+          pasteHandled,
+          hasHtml: Boolean(draft && typeof draft === "object" && draft.html)
+        });
+        writeElementValue(element, draft);
+        dispatchSyntheticInput(element);
+      } else {
+        debugLog("restore: paste applied", { length: current.length });
+      }
+    } catch (error) {
+      debugWarn("restore verification failed", error);
+    }
+    restoringNow.delete(element);
+  }, RESTORE_GUARD_RELEASE_MS);
+}
+
+function insertViaPaste(element, ownerDocument, draft) {
+  const view = ownerDocument.defaultView || window;
+  const html = draft && typeof draft === "object" ? draft.html : null;
+  const text = getDraftText(draft);
+
+  if (typeof element.focus !== "function" || typeof element.dispatchEvent !== "function") {
+    return false;
+  }
+  if (typeof view.DataTransfer !== "function" || typeof view.ClipboardEvent !== "function") {
+    return false;
+  }
+
+  try {
+    element.focus();
+    if (typeof ownerDocument.getSelection === "function" && typeof ownerDocument.createRange === "function") {
+      const selection = ownerDocument.getSelection();
+      if (selection && typeof selection.removeAllRanges === "function") {
+        const range = ownerDocument.createRange();
+        range.selectNodeContents(element);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+
+    const dataTransfer = new view.DataTransfer();
+    if (text) {
+      dataTransfer.setData("text/plain", text);
+    }
+    if (html) {
+      dataTransfer.setData("text/html", sanitizeDraftHtml(html, ownerDocument));
+    }
+
+    const pasteEvent = new view.ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: dataTransfer
+    });
+    element.dispatchEvent(pasteEvent);
+    return pasteEvent.defaultPrevented === true;
+  } catch (error) {
+    debugWarn("synthetic paste restore failed", error);
+    return false;
+  }
+}
+
+function getDraftText(draft) {
+  if (draft && typeof draft === "object") {
+    return String(draft.value || "");
+  }
+  return String(draft || "");
+}
+
+function writeElementValue(element, draft) {
   if (isTextInputElement(element)) {
-    element.value = value;
+    element.value = getDraftText(draft);
     return;
   }
 
   if (isEditableElement(element)) {
-    writeContentEditableValue(element, value);
+    writeContentEditableValue(element, draft);
   }
 }
 
@@ -831,9 +1059,51 @@ function normalizeEditableValue(value) {
     .replace(/\n+$/g, "");
 }
 
-function writeContentEditableValue(element, value) {
+function writeContentEditableValue(element, draft) {
   const ownerDocument = element.ownerDocument || document;
-  const normalizedValue = String(value || "").replace(/\r\n?/g, "\n");
+  const html = draft && typeof draft === "object" ? draft.html : null;
+  const normalizedText = getDraftText(draft).replace(/\r\n?/g, "\n");
+
+  // When we captured the editor's HTML, restore it so formatting and exact line breaks come
+  // back. Setting innerHTML keeps Quill/CKEditor able to re-sync through their own
+  // MutationObservers, and the synthetic input dispatched by the caller nudges that sync.
+  if (html && typeof element.innerHTML === "string") {
+    try {
+      element.innerHTML = sanitizeDraftHtml(html, ownerDocument);
+      return;
+    } catch (error) {
+      debugWarn("html restore failed, falling back to plain text", error);
+    }
+  }
+
+  rebuildContentEditable(element, ownerDocument, normalizedText);
+}
+
+function sanitizeDraftHtml(html, ownerDocument) {
+  const doc = ownerDocument || document;
+  const template = doc.createElement("template");
+  template.innerHTML = String(html || "");
+  const root = template.content || template;
+
+  if (typeof root.querySelectorAll === "function") {
+    root.querySelectorAll("script, style, iframe, object, embed, link, meta, base").forEach((node) => {
+      node.remove();
+    });
+    root.querySelectorAll("*").forEach((node) => {
+      Array.from(node.attributes || []).forEach((attr) => {
+        const name = attr.name.toLowerCase();
+        const value = String(attr.value || "");
+        if (name.startsWith("on") || (/^(href|src|xlink:href)$/.test(name) && /^\s*javascript:/i.test(value))) {
+          node.removeAttribute(attr.name);
+        }
+      });
+    });
+  }
+
+  return template.innerHTML;
+}
+
+function rebuildContentEditable(element, ownerDocument, normalizedValue) {
   element.replaceChildren();
 
   const lines = normalizedValue.split("\n");

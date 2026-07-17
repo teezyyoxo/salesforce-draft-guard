@@ -18,7 +18,7 @@ This first version uses heuristics because Salesforce Lightning markup and reque
 - It normalizes Email iframe editors against the top Salesforce page context when that context is accessible, so saved and restored Email body keys stay aligned.
 - It marks the active composer as pending-clear when the user clicks `Send`, `Share`, `Save`, `Post`, or `Log a Call`.
 - It clears only the draft keys captured from that composer when Salesforce then issues a successful related `POST`, `PUT`, or `PATCH` request.
-- It shows configurable toast notifications for save, restore, and clear events, including position, size, colors, and optional sound.
+- It shows configurable toast notifications for save, restore, and clear events, including position, size, save-confirmation frequency, colors, and optional sound.
 
 That is intentionally conservative, but not perfect. Expect some tuning against your specific Salesforce UI.
 
@@ -93,12 +93,13 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 
 - Position: `upper-right`, `upper-left`, `lower-left`, `lower-right` (default), `lower-middle`, `absolute-middle`, or `upper-middle`.
 - Text size: Small, Medium (default), Large, or Extra Large.
+- Save confirmation frequency: Once per typing burst (default), once per draft, or every save.
 - Colors: user-selectable text and background colors.
 - Sound effect: None (default), Soft chime, Click, or Success tone.
 
 ### Next investigation pass
 
-1. Manually smoke-test DG-002, DG-007, DG-008, and DG-010 in Salesforce against version 0.3.2:
+1. Manually smoke-test DG-002, DG-007, DG-008, and DG-010 in Salesforce against version 0.4.0:
    in the Post and Email composers, type multi-line and formatted (bold/italic) text, refresh
    or re-render, and confirm an exact restore — including formatting and line breaks, with no
    extra blank lines — then confirm you can freely backspace/delete the restored content, and

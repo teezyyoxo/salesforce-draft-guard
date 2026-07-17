@@ -360,8 +360,80 @@ test("toast settings normalize unknown choices and invalid colors", () => {
 
     assert.equal(normalized.toastPosition, "lower-right");
     assert.equal(normalized.toastSize, "medium");
+    assert.equal(normalized.toastFrequency, "typing-burst");
     assert.equal(normalized.toastTextColor, "#f9fafb");
     assert.equal(normalized.toastBackgroundColor, "#123abc");
     assert.equal(normalized.toastSound, "none");
+  `);
+});
+
+test("save confirmation frequency controls repeated save toasts", () => {
+  loadContentScript(`
+    const element = { nodeType: 1, tagName: "DIV" };
+
+    settings.toastFrequency = "typing-burst";
+    assert.equal(shouldShowDraftSaveToast(element, "draft-key"), true);
+    assert.equal(shouldShowDraftSaveToast(element, "draft-key"), false);
+    toastStateByElement.get(element).toastShown = false;
+
+    settings.toastFrequency = "once-per-draft";
+    assert.equal(shouldShowDraftSaveToast(element, "another-draft-key"), true);
+    assert.equal(shouldShowDraftSaveToast(element, "another-draft-key"), false);
+
+    settings.toastFrequency = "every-save";
+    assert.equal(shouldShowDraftSaveToast(element, "draft-key"), true);
+    assert.equal(shouldShowDraftSaveToast(element, "draft-key"), true);
+  `);
+});
+
+test("Email viewport reset moves caret and scroll position to the beginning", () => {
+  loadContentScript(`
+    const range = {
+      selectNodeContents: () => {},
+      collapse: (atStart) => assert.equal(atStart, true)
+    };
+    const selection = {
+      removeAllRanges: () => {},
+      addRange: (value) => assert.equal(value, range)
+    };
+    const scrollingElement = { scrollTop: 80, scrollLeft: 40 };
+    const emailDocument = {
+      getSelection: () => selection,
+      createRange: () => range,
+      scrollingElement,
+      documentElement: scrollingElement,
+      body: { scrollTop: 60, scrollLeft: 30 }
+    };
+    const element = {
+      ownerDocument: emailDocument,
+      scrollTop: 100,
+      scrollLeft: 50
+    };
+
+    resetEmailEditorViewport(element);
+    assert.equal(element.scrollTop, 0);
+    assert.equal(element.scrollLeft, 0);
+    assert.equal(scrollingElement.scrollTop, 0);
+    assert.equal(scrollingElement.scrollLeft, 0);
+    assert.equal(emailDocument.body.scrollTop, 0);
+    assert.equal(emailDocument.body.scrollLeft, 0);
+  `);
+});
+
+test("Email block markup becomes one line unit per paragraph", () => {
+  loadContentScript(`
+    const text = (value) => ({ nodeType: 3, textContent: value });
+    const block = (tagName, children) => ({ nodeType: 1, tagName, childNodes: children });
+    const one = text("First line");
+    const two = text("Second line");
+    const blank = block("P", [{ nodeType: 1, tagName: "BR" }]);
+
+    const units = collectEmailLineUnits([
+      block("P", [one]),
+      blank,
+      block("DIV", [two])
+    ]);
+
+    assert.deepEqual(units, [[one], [], [two]]);
   `);
 });

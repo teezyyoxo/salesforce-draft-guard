@@ -4,12 +4,14 @@ const DEFAULT_SETTINGS = {
   showToasts: true,
   toastPosition: "lower-right",
   toastSize: "medium",
+  toastFrequency: "typing-burst",
   toastTextColor: "#f9fafb",
   toastBackgroundColor: "#111827",
   toastSound: "none"
 };
 const TOAST_POSITIONS = ["upper-right", "upper-left", "lower-left", "lower-right", "lower-middle", "absolute-middle", "upper-middle"];
 const TOAST_SIZES = ["small", "medium", "large", "extra-large"];
+const TOAST_FREQUENCIES = ["typing-burst", "once-per-draft", "every-save"];
 const TOAST_SOUNDS = ["none", "soft-chime", "click", "success-tone"];
 
 const ACTION_OPTIONS = [
@@ -27,6 +29,7 @@ const keywordsNode = document.getElementById("keywords");
 const showToastsNode = document.getElementById("showToasts");
 const toastPositionNode = document.getElementById("toastPosition");
 const toastSizeNode = document.getElementById("toastSize");
+const toastFrequencyNode = document.getElementById("toastFrequency");
 const toastSoundNode = document.getElementById("toastSound");
 const toastTextColorNode = document.getElementById("toastTextColor");
 const toastBackgroundColorNode = document.getElementById("toastBackgroundColor");
@@ -63,6 +66,7 @@ async function loadSettings() {
   showToastsNode.checked = settings.showToasts;
   toastPositionNode.value = settings.toastPosition;
   toastSizeNode.value = settings.toastSize;
+  toastFrequencyNode.value = settings.toastFrequency;
   toastSoundNode.value = settings.toastSound;
   toastTextColorNode.value = settings.toastTextColor;
   toastBackgroundColorNode.value = settings.toastBackgroundColor;
@@ -90,6 +94,7 @@ function collectSettings() {
     showToasts: showToastsNode.checked,
     toastPosition: toastPositionNode.value,
     toastSize: toastSizeNode.value,
+    toastFrequency: toastFrequencyNode.value,
     toastTextColor: toastTextColorNode.value,
     toastBackgroundColor: toastBackgroundColorNode.value,
     toastSound: toastSoundNode.value
@@ -103,6 +108,7 @@ function normalizeSettings(stored) {
     showToasts: stored.showToasts !== false,
     toastPosition: normalizeChoice(stored.toastPosition, TOAST_POSITIONS, DEFAULT_SETTINGS.toastPosition),
     toastSize: normalizeChoice(stored.toastSize, TOAST_SIZES, DEFAULT_SETTINGS.toastSize),
+    toastFrequency: normalizeChoice(stored.toastFrequency, TOAST_FREQUENCIES, DEFAULT_SETTINGS.toastFrequency),
     toastTextColor: normalizeColor(stored.toastTextColor, DEFAULT_SETTINGS.toastTextColor),
     toastBackgroundColor: normalizeColor(stored.toastBackgroundColor, DEFAULT_SETTINGS.toastBackgroundColor),
     toastSound: normalizeChoice(stored.toastSound, TOAST_SOUNDS, DEFAULT_SETTINGS.toastSound)

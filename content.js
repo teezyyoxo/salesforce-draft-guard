@@ -1,5 +1,6 @@
 const STORAGE_PREFIX = "sfdg:draft:";
-const SAVE_DEBOUNCE_MS = 400;
+const SAVE_DELAY_MS = 700;
+const TOAST_BURST_RESET_MS = 1500;
 const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
 const DRAFT_ELEMENT_SELECTOR = "textarea, input[type='text'], [contenteditable='true'], body[contenteditable='true'], .cke_editable";
@@ -16,12 +17,14 @@ const DEFAULT_SETTINGS = {
   showToasts: true,
   toastPosition: "lower-right",
   toastSize: "medium",
+  toastFrequency: "typing-burst",
   toastTextColor: "#f9fafb",
   toastBackgroundColor: "#111827",
   toastSound: "none"
 };
 const TOAST_POSITIONS = ["upper-right", "upper-left", "lower-left", "lower-right", "lower-middle", "absolute-middle", "upper-middle"];
 const TOAST_SIZES = ["small", "medium", "large", "extra-large"];
+const TOAST_FREQUENCIES = ["typing-burst", "once-per-draft", "every-save"];
 const TOAST_SOUNDS = ["none", "soft-chime", "click", "success-tone"];
 
 const RESTORE_GUARD_RELEASE_MS = 150;
@@ -30,6 +33,7 @@ const draftCache = new Map();
 const pendingActions = [];
 const trackedEditors = new Map();
 const saveTimers = new WeakMap();
+const toastStateByElement = new WeakMap();
 const observedEditors = new WeakSet();
 const observedFrames = new WeakSet();
 const restoringNow = new WeakSet();
@@ -177,7 +181,7 @@ function isEmailEditorElement(element) {
   return (
     element.getAttribute("aria-label") === "Email Body" ||
     element.getAttribute("title") === "Email Body" ||
-    element.classList.contains("cke_editable")
+    Boolean(element.classList && element.classList.contains("cke_editable"))
   );
 }
 
@@ -339,6 +343,7 @@ function handleStorageChange(changes, areaName) {
     "showToasts",
     "toastPosition",
     "toastSize",
+    "toastFrequency",
     "toastTextColor",
     "toastBackgroundColor",
     "toastSound"
@@ -442,23 +447,38 @@ function scheduleSave(element) {
     return;
   }
 
-  const priorTimer = saveTimers.get(element);
-  if (priorTimer) {
-    clearTimeout(priorTimer);
+  const toastState = getToastState(element);
+  if (toastState.resetTimer) {
+    window.clearTimeout(toastState.resetTimer);
+  }
+  toastState.resetTimer = window.setTimeout(() => {
+    toastState.resetTimer = null;
+    toastState.toastShown = false;
+  }, TOAST_BURST_RESET_MS);
+
+  // Start the delay on the first typing event rather than restarting it after every
+  // keystroke. This makes the first save/toast happen shortly after typing begins while
+  // still allowing another save cycle after the prior one completes.
+  if (saveTimers.has(element)) {
+    return;
   }
 
   const timerId = window.setTimeout(() => {
+    saveTimers.delete(element);
     persistDraft(element).catch((error) => {
       console.error("Salesforce Draft Guard failed to persist a draft.", error);
     });
-  }, SAVE_DEBOUNCE_MS);
+  }, SAVE_DELAY_MS);
 
   saveTimers.set(element, timerId);
 }
 
 async function persistDraft(element) {
   const value = readElementValue(element);
-  const html = readElementHtml(element);
+  const rawHtml = readElementHtml(element);
+  const html = isEmailEditorElement(element) && rawHtml
+    ? normalizeEmailDraftHtml(rawHtml, element.ownerDocument || document)
+    : rawHtml;
   const meta = getDraftMetadata(element);
   if (isEmailEditorElement(element)) {
     debugLog("persistDraft called for email element", {
@@ -474,6 +494,10 @@ async function persistDraft(element) {
     await removeDraftKeys([meta.storageKey]);
     draftCache.delete(meta.storageKey);
     toastedFieldKeys.delete(meta.storageKey);
+    const toastState = toastStateByElement.get(element);
+    if (toastState) {
+      toastState.toastShown = false;
+    }
     return;
   }
 
@@ -502,12 +526,42 @@ async function persistDraft(element) {
     });
   }
 
-  // Only announce the first save for a given field per session; subsequent debounced
-  // autosaves stay silent so the toast does not flash on every pause in typing.
-  if (!toastedFieldKeys.has(meta.storageKey)) {
-    toastedFieldKeys.add(meta.storageKey);
+  if (shouldShowDraftSaveToast(element, meta.storageKey)) {
     showToast("Draft saved locally.");
   }
+}
+
+function getToastState(element) {
+  let state = toastStateByElement.get(element);
+  if (!state) {
+    state = {
+      resetTimer: null,
+      toastShown: false
+    };
+    toastStateByElement.set(element, state);
+  }
+  return state;
+}
+
+function shouldShowDraftSaveToast(element, storageKey) {
+  if (settings.toastFrequency === "every-save") {
+    return true;
+  }
+
+  if (settings.toastFrequency === "once-per-draft") {
+    if (toastedFieldKeys.has(storageKey)) {
+      return false;
+    }
+    toastedFieldKeys.add(storageKey);
+    return true;
+  }
+
+  const state = getToastState(element);
+  if (state.toastShown) {
+    return false;
+  }
+  state.toastShown = true;
+  return true;
 }
 
 function scanAndRestore(root) {
@@ -629,6 +683,15 @@ async function clearDraftKeys(storageKeys) {
     draftCache.delete(key);
     toastedFieldKeys.delete(key);
   });
+  for (const [element, meta] of trackedEditors.entries()) {
+    if (!storageKeys.includes(meta.storageKey)) {
+      continue;
+    }
+    const toastState = toastStateByElement.get(element);
+    if (toastState) {
+      toastState.toastShown = false;
+    }
+  }
   await removeDraftKeys(storageKeys);
 }
 
@@ -984,8 +1047,43 @@ function restoreEditableDraft(element, draft) {
     } catch (error) {
       debugWarn("restore verification failed", error);
     }
+    if (isEmailEditorElement(element)) {
+      resetEmailEditorViewport(element);
+    }
     restoringNow.delete(element);
   }, RESTORE_GUARD_RELEASE_MS);
+}
+
+function resetEmailEditorViewport(element) {
+  const ownerDocument = element.ownerDocument || document;
+
+  // The synthetic paste leaves CKEditor’s selection at the end of the restored body. When
+  // the user focuses the editor, the browser then scrolls that caret into view. Put the caret
+  // at the beginning and reset both the iframe body and document scroll positions.
+  try {
+    const selection = typeof ownerDocument.getSelection === "function" ? ownerDocument.getSelection() : null;
+    if (selection && typeof ownerDocument.createRange === "function") {
+      const range = ownerDocument.createRange();
+      range.selectNodeContents(element);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  } catch (error) {
+    debugWarn("could not reset Email caret position", error);
+  }
+
+  element.scrollTop = 0;
+  element.scrollLeft = 0;
+  const scrollingElement = ownerDocument.scrollingElement || ownerDocument.documentElement;
+  if (scrollingElement) {
+    scrollingElement.scrollTop = 0;
+    scrollingElement.scrollLeft = 0;
+  }
+  if (ownerDocument.body) {
+    ownerDocument.body.scrollTop = 0;
+    ownerDocument.body.scrollLeft = 0;
+  }
 }
 
 function insertViaPaste(element, ownerDocument, draft) {
@@ -1017,7 +1115,10 @@ function insertViaPaste(element, ownerDocument, draft) {
       dataTransfer.setData("text/plain", text);
     }
     if (html) {
-      dataTransfer.setData("text/html", sanitizeDraftHtml(html, ownerDocument));
+      const pasteHtml = isEmailEditorElement(element)
+        ? normalizeEmailDraftHtml(html, ownerDocument)
+        : sanitizeDraftHtml(html, ownerDocument);
+      dataTransfer.setData("text/html", pasteHtml);
     }
 
     const pasteEvent = new view.ClipboardEvent("paste", {
@@ -1069,7 +1170,9 @@ function writeContentEditableValue(element, draft) {
   // MutationObservers, and the synthetic input dispatched by the caller nudges that sync.
   if (html && typeof element.innerHTML === "string") {
     try {
-      element.innerHTML = sanitizeDraftHtml(html, ownerDocument);
+      element.innerHTML = isEmailEditorElement(element)
+        ? normalizeEmailDraftHtml(html, ownerDocument)
+        : sanitizeDraftHtml(html, ownerDocument);
       return;
     } catch (error) {
       debugWarn("html restore failed, falling back to plain text", error);
@@ -1101,6 +1204,93 @@ function sanitizeDraftHtml(html, ownerDocument) {
   }
 
   return template.innerHTML;
+}
+
+function normalizeEmailDraftHtml(html, ownerDocument) {
+  const sanitizedHtml = sanitizeDraftHtml(html, ownerDocument);
+  const template = ownerDocument.createElement("template");
+  template.innerHTML = sanitizedHtml;
+  const root = template.content || template;
+  const rawNodes = Array.from(root.childNodes || []);
+
+  if (!rawNodes.some(isEmailBlockElement)) {
+    return template.innerHTML;
+  }
+
+  // Pretty-printed whitespace around paragraph nodes is not user content. Leaving it in
+  // the line-unit stream would turn indentation/newlines in the saved HTML into extra lines.
+  const sourceNodes = rawNodes.filter(
+    (node) => node.nodeType !== 3 || Boolean(String(node.textContent || "").trim())
+  );
+
+  const lineUnits = collectEmailLineUnits(sourceNodes);
+  if (typeof root.replaceChildren !== "function") {
+    return template.innerHTML;
+  }
+
+  root.replaceChildren();
+  lineUnits.forEach((unit, index) => {
+    unit.forEach((node) => root.appendChild(node));
+    if (index < lineUnits.length - 1) {
+      root.appendChild(ownerDocument.createElement("br"));
+    }
+  });
+
+  return template.innerHTML;
+}
+
+function collectEmailLineUnits(nodes) {
+  const units = [];
+  let inlineNodes = [];
+
+  const flushInlineNodes = () => {
+    if (inlineNodes.length) {
+      units.push(inlineNodes);
+      inlineNodes = [];
+    }
+  };
+
+  nodes.forEach((node) => {
+    if (!isEmailBlockElement(node)) {
+      inlineNodes.push(node);
+      return;
+    }
+
+    flushInlineNodes();
+    const childNodes = Array.from(node.childNodes || []);
+    const isEmptyBlock = childNodes.every(
+      (child) =>
+        (child.nodeType === 3 && !String(child.textContent || "").trim()) ||
+        (child.nodeType === 1 && child.tagName.toLowerCase() === "br")
+    );
+    const childUnits = isEmptyBlock ? [] : collectEmailLineUnits(childNodes);
+    units.push(...(childUnits.length ? childUnits : [[]]));
+  });
+
+  flushInlineNodes();
+  return units;
+}
+
+function isEmailBlockElement(node) {
+  if (!node || node.nodeType !== 1) {
+    return false;
+  }
+
+  return [
+    "ADDRESS",
+    "ARTICLE",
+    "BLOCKQUOTE",
+    "DIV",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "HEADER",
+    "P",
+    "SECTION"
+  ].includes(node.tagName.toUpperCase());
 }
 
 function rebuildContentEditable(element, ownerDocument, normalizedValue) {
@@ -1422,6 +1612,7 @@ function normalizeSettings(stored) {
     showToasts: stored.showToasts !== false,
     toastPosition: normalizeChoice(stored.toastPosition, TOAST_POSITIONS, DEFAULT_SETTINGS.toastPosition),
     toastSize: normalizeChoice(stored.toastSize, TOAST_SIZES, DEFAULT_SETTINGS.toastSize),
+    toastFrequency: normalizeChoice(stored.toastFrequency, TOAST_FREQUENCIES, DEFAULT_SETTINGS.toastFrequency),
     toastTextColor: normalizeColor(stored.toastTextColor, DEFAULT_SETTINGS.toastTextColor),
     toastBackgroundColor: normalizeColor(stored.toastBackgroundColor, DEFAULT_SETTINGS.toastBackgroundColor),
     toastSound: normalizeChoice(stored.toastSound, TOAST_SOUNDS, DEFAULT_SETTINGS.toastSound)

@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.4.0] - 2026-07-17
+
+### Added
+- Added configurable save-confirmation frequency: once per typing burst (default), once per
+  draft, or every save.
+
+### Changed
+- Save scheduling now starts a short delay from the first typing event, so the initial local
+  save and its confirmation toast happen promptly and together.
+- Email draft restoration now places the caret and viewport at the beginning of the restored
+  body instead of leaving the editor scrolled to the bottom.
+
+### Fixed
+- Email paragraph markup is canonicalized before restore so CKEditor does not turn saved block
+  wrappers into extra line breaks.
+
+### Verified
+- Confirmed all JavaScript files pass `node --check`.
+- Confirmed `node --test test/content.test.js` passes with 16 tests.
+
 ## [0.3.3] - 2026-06-04
 
 Follow-up to 0.3.2 from live testing. Rich text, line breaks, and bold now restore correctly

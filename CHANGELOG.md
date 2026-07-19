@@ -6,7 +6,8 @@ The format is based on Keep a Changelog and this project uses Semantic Versionin
 
 ## [0.4.1] - 2026-07-19
 
-Immediate hotfix for drafts being restored into unrelated Salesforce record fields.
+Immediate hotfix for drafts being restored into unrelated Salesforce record fields, including
+Email drafts leaking into recipient fields.
 
 ### Fixed
 - Fixed generic draft detection reading the entire surrounding form/container. A nearby field
@@ -15,13 +16,22 @@ Immediate hotfix for drafts being restored into unrelated Salesforce record fiel
 - Generic keyword matching now uses only the candidate field's own label and attributes, while
   known Email, Post, and activity composer surfaces remain protected by their structural
   selectors.
+- Fixed Email drafts being restored into the `To`, `Cc`, or `Bcc` fields. The canonical
+  `email-body` draft key is now reserved for the editable Email Body element; ordinary fields
+  in the Email composer are not treated as that draft.
+- Fixed the Email caret reset race that could call `Selection.addRange()` after Salesforce had
+  detached/replaced the editor, producing `addRange(): The given range isn't in document.`
+
+### Added
+- Added regression coverage ensuring unrelated Case fields are not treated as draft surfaces
+  merely because a neighboring field contains a configured keyword.
+- Added regression coverage for Email recipient-field isolation and detached-editor viewport
+  reset handling.
 
 ### Changed
 - Bumped the extension version to 0.4.1.
 
 ### Verified
-- Added regression coverage ensuring unrelated Case fields are not treated as draft surfaces
-  merely because a neighboring field contains a configured keyword.
 - Confirmed all JavaScript files pass `node --check` and the full Node test suite passes.
 
 ## [0.4.0] - 2026-07-17

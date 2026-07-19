@@ -4,7 +4,7 @@ const TOAST_BURST_RESET_MS = 1500;
 const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
 const DRAFT_ELEMENT_SELECTOR = "textarea, input[type='text'], [contenteditable='true'], body[contenteditable='true'], .cke_editable";
-const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputContainer textarea, .publisherInputContainer input[type='text'], .publisherInputContainer [contenteditable], .forceChatterPublisher textarea, .forceChatterPublisher input[type='text'], .forceChatterPublisher [contenteditable], .oneRecordActionWrapper textarea, .oneRecordActionWrapper input[type='text'], .oneRecordActionWrapper [contenteditable], body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], [role='textbox'][contenteditable='true'][aria-label='Email Body'], .cke_editable, .cke_wysiwyg_frame";
+const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputContainer textarea, .publisherInputContainer input[type='text'], .publisherInputContainer [contenteditable], body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], [role='textbox'][contenteditable='true'][aria-label='Email Body'], .cke_editable, .cke_wysiwyg_frame";
 // Flip to true to surface [SFDG] diagnostics in the DevTools console (draft keys, save/
 // restore paths, iframe binding). Off by default to keep the console clean; genuine failures
 // are still reported via console.error regardless of this flag.
@@ -172,6 +172,10 @@ function isElementRenderable(element) {
 
 function isEmailEditorElement(element) {
   if (!isElementNode(element)) {
+    return false;
+  }
+
+  if (!isEditableElement(element)) {
     return false;
   }
 
@@ -737,7 +741,7 @@ function getDraftMetadata(element) {
 
   let scope;
   let fieldKey;
-  if (actionType === "email" || isEmailEditorElement(element)) {
+  if (isEmailEditorElement(element)) {
     // The Salesforce/CKEditor Email body exposes per-load identifiers (instance ids, generated
     // titles/aria-labels) that change on every page load, which broke key matching between save
     // and restore. Derive a canonical key from stable signals only — the record context plus a
@@ -1061,13 +1065,17 @@ function resetEmailEditorViewport(element) {
   // the user focuses the editor, the browser then scrolls that caret into view. Put the caret
   // at the beginning and reset both the iframe body and document scroll positions.
   try {
-    const selection = typeof ownerDocument.getSelection === "function" ? ownerDocument.getSelection() : null;
-    if (selection && typeof ownerDocument.createRange === "function") {
-      const range = ownerDocument.createRange();
-      range.selectNodeContents(element);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
+    const isAttached = element.isConnected !== false &&
+      (typeof ownerDocument.contains !== "function" || ownerDocument.contains(element));
+    if (isAttached) {
+      const selection = typeof ownerDocument.getSelection === "function" ? ownerDocument.getSelection() : null;
+      if (selection && typeof ownerDocument.createRange === "function") {
+        const range = ownerDocument.createRange();
+        range.selectNodeContents(element);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
     }
   } catch (error) {
     debugWarn("could not reset Email caret position", error);
@@ -1328,6 +1336,13 @@ function isDraftCandidate(element) {
 
   if (matchesKnownDraftSurface(element)) {
     return true;
+  }
+
+  // The Email composer contains several ordinary text inputs (To, Cc, and Bcc). Its
+  // container is classified as `email` from the composer heading, but only the editable
+  // Email Body above is a recoverable draft surface.
+  if (getContainerActionType(getContainer(element)) === "email") {
+    return false;
   }
 
   // Do not inspect the surrounding form/container here. Salesforce record pages place

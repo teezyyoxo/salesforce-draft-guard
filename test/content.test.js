@@ -366,6 +366,47 @@ test("email draft key is canonical and ignores per-load identifiers", () => {
   `);
 });
 
+test("Email canonical draft metadata is limited to the editable message body", () => {
+  loadContentScript(`
+    const emailContainer = {
+      nodeType: 1,
+      tagName: "FORM",
+      dataset: {},
+      textContent: "Email To Cc Bcc",
+      matches: () => false,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      getAttribute: () => ""
+    };
+
+    function makeField(tagName, label, editable = false) {
+      return {
+        nodeType: 1,
+        tagName,
+        dataset: {},
+        isContentEditable: editable,
+        className: editable ? "cke_editable" : "slds-input",
+        getAttribute: (name) => (name === "aria-label" ? label : ""),
+        matches: () => false,
+        closest: (selector) => selector.includes("[role='dialog']") ? emailContainer : null,
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        ownerDocument: { querySelector: () => null }
+      };
+    }
+
+    const body = makeField("DIV", "Email Body", true);
+    const to = makeField("INPUT", "To");
+    const cc = makeField("INPUT", "Cc");
+
+    const bodyMeta = getDraftMetadata(body);
+    assert.ok(bodyMeta);
+    assert.equal(bodyMeta.fieldKey, hashKey("email-body"));
+    assert.equal(getDraftMetadata(to), null);
+    assert.equal(getDraftMetadata(cc), null);
+  `);
+});
+
 test("hidden editors are not treated as renderable, so restore defers until shown", () => {
   loadContentScript(`
     // display:none / detached nodes report no client rects.
@@ -449,6 +490,40 @@ test("Email viewport reset moves caret and scroll position to the beginning", ()
     assert.equal(scrollingElement.scrollLeft, 0);
     assert.equal(emailDocument.body.scrollTop, 0);
     assert.equal(emailDocument.body.scrollLeft, 0);
+  `);
+});
+
+test("Email viewport reset skips a detached editor range", () => {
+  loadContentScript(`
+    let addRangeCalls = 0;
+    const emailDocument = {
+      contains: () => false,
+      getSelection: () => ({
+        removeAllRanges: () => {},
+        addRange: () => {
+          addRangeCalls += 1;
+        }
+      }),
+      createRange: () => ({
+        selectNodeContents: () => {},
+        collapse: () => {}
+      }),
+      scrollingElement: { scrollTop: 80, scrollLeft: 40 },
+      documentElement: { scrollTop: 80, scrollLeft: 40 },
+      body: { scrollTop: 60, scrollLeft: 30 }
+    };
+    const element = {
+      nodeType: 1,
+      ownerDocument: emailDocument,
+      isConnected: false,
+      scrollTop: 100,
+      scrollLeft: 50
+    };
+
+    resetEmailEditorViewport(element);
+    assert.equal(addRangeCalls, 0);
+    assert.equal(element.scrollTop, 0);
+    assert.equal(element.scrollLeft, 0);
   `);
 });
 

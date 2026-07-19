@@ -232,6 +232,38 @@ test("field key uses intrinsic identity and is frozen against volatile text", ()
   `);
 });
 
+test("generic draft detection ignores neighboring Case field labels", () => {
+  loadContentScript(`
+    const container = {
+      nodeType: 1,
+      tagName: "FORM",
+      textContent: "Description Fixed in Release Repeated Issue Case License Requester",
+      dataset: {},
+      matches: () => false,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      getAttribute: () => ""
+    };
+
+    function makeField(label) {
+      return {
+        nodeType: 1,
+        tagName: "INPUT",
+        className: "slds-input",
+        getAttribute: (name) => (name === "aria-label" ? label : ""),
+        matches: () => false,
+        closest: (selector) => selector.includes("[role='dialog']") ? container : null,
+        ownerDocument: { querySelector: () => null }
+      };
+    }
+
+    assert.equal(isDraftCandidate(makeField("Fixed in Release")), false);
+    assert.equal(isDraftCandidate(makeField("Repeated Issue Case")), false);
+    assert.equal(isDraftCandidate(makeField("License Requester")), false);
+    assert.equal(isDraftCandidate(makeField("Description")), true);
+  `);
+});
+
 test("restore guard prevents a programmatic restore from scheduling a save", () => {
   loadContentScript(`
     const guarded = { nodeType: 1, tagName: "DIV" };

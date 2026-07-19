@@ -4,7 +4,7 @@ const TOAST_BURST_RESET_MS = 1500;
 const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
 const DRAFT_ELEMENT_SELECTOR = "textarea, input[type='text'], [contenteditable='true'], body[contenteditable='true'], .cke_editable";
-const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputContainer textarea, .publisherInputContainer input[type='text'], .publisherInputContainer [contenteditable], body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], [role='textbox'][contenteditable='true'][aria-label='Email Body'], .cke_editable, .cke_wysiwyg_frame";
+const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputContainer textarea, .publisherInputContainer input[type='text'], .publisherInputContainer [contenteditable], .forceChatterPublisher textarea, .forceChatterPublisher input[type='text'], .forceChatterPublisher [contenteditable], .oneRecordActionWrapper textarea, .oneRecordActionWrapper input[type='text'], .oneRecordActionWrapper [contenteditable], body[role='textbox'][contenteditable='true'], body[aria-label='Email Body'][contenteditable='true'], [role='textbox'][contenteditable='true'][aria-label='Email Body'], .cke_editable, .cke_wysiwyg_frame";
 // Flip to true to surface [SFDG] diagnostics in the DevTools console (draft keys, save/
 // restore paths, iframe binding). Off by default to keep the console clean; genuine failures
 // are still reported via console.error regardless of this flag.
@@ -905,7 +905,7 @@ function inferFieldRole(element, container) {
       element.getAttribute("name") || "",
       element.getAttribute("placeholder") || "",
       element.getAttribute("title") || "",
-      container.textContent || ""
+      element.getAttribute("data-placeholder") || ""
     ].join(" ")
   ).toLowerCase();
 
@@ -1330,8 +1330,18 @@ function isDraftCandidate(element) {
     return true;
   }
 
+  // Do not inspect the surrounding form/container here. Salesforce record pages place
+  // unrelated fields (for example "Fixed in Release" and "License Requester") beside
+  // composer fields, so container text makes every text input look like a draft surface.
+  // Generic protection is intentionally limited to the field's own stable attributes.
   const semanticText = normalizeWhitespace(
-    `${getElementLabel(element)} ${element.className || ""} ${getContainer(element).textContent || ""}`
+    [
+      getElementLabel(element),
+      element.getAttribute("name") || "",
+      element.getAttribute("placeholder") || "",
+      element.getAttribute("title") || "",
+      element.getAttribute("data-placeholder") || ""
+    ].join(" ")
   ).toLowerCase();
 
   return settings.fieldKeywords.some((keyword) => semanticText.includes(keyword));

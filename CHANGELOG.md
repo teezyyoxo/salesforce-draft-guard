@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.4.1] - 2026-07-19
+
+Immediate hotfix for drafts being restored into unrelated Salesforce record fields.
+
+### Fixed
+- Fixed generic draft detection reading the entire surrounding form/container. A nearby field
+  such as `Description` could make unrelated fields like `Fixed in Release`, `Repeated Issue
+  Case`, or `License Requester` eligible for the same draft scan and restore flow.
+- Generic keyword matching now uses only the candidate field's own label and attributes, while
+  known Email, Post, and activity composer surfaces remain protected by their structural
+  selectors.
+
+### Changed
+- Bumped the extension version to 0.4.1.
+
+### Verified
+- Added regression coverage ensuring unrelated Case fields are not treated as draft surfaces
+  merely because a neighboring field contains a configured keyword.
+- Confirmed all JavaScript files pass `node --check` and the full Node test suite passes.
+
 ## [0.4.0] - 2026-07-17
 
 ### Added

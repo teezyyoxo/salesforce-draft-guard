@@ -33,12 +33,16 @@ const draftCache = new Map();
 const pendingActions = [];
 const trackedEditors = new Map();
 const saveTimers = new WeakMap();
+const submittedEditors = new WeakSet();
 const toastStateByElement = new WeakMap();
 const observedEditors = new WeakSet();
 const observedFrames = new WeakSet();
 const restoringNow = new WeakSet();
 const restoredEditors = new WeakSet();
 const toastedFieldKeys = new Set();
+const clearedDraftKeys = new Set();
+const draftGenerations = new Map();
+const draftStorageQueues = new Map();
 const sessionStorageArea = chrome.storage.session;
 const localStorageArea = chrome.storage.local;
 const settingsArea = chrome.storage.sync || chrome.storage.local;
@@ -337,6 +341,18 @@ function handleFocusEvent(event) {
 }
 
 function handleStorageChange(changes, areaName) {
+  if (areaName === "session" || areaName === "local") {
+    const removedDraftKeys = Object.entries(changes)
+      .filter(([key, change]) => key.startsWith(STORAGE_PREFIX) && !change.newValue)
+      .map(([key]) => key);
+    if (removedDraftKeys.length) {
+      // Email bodies run in CKEditor iframes, which have their own content-script instance.
+      // A clear initiated by the outer Send button must therefore also cancel any debounce
+      // timer in that frame before it can rewrite the just-removed draft.
+      markDraftKeysCleared(removedDraftKeys);
+    }
+  }
+
   if (areaName !== "sync" && areaName !== "local") {
     return;
   }
@@ -392,7 +408,7 @@ function handleInputEvent(event) {
     return;
   }
 
-  scheduleSave(target);
+  scheduleSave(target, event.type);
 }
 
 function handleClickEvent(event) {
@@ -412,11 +428,18 @@ function handleClickEvent(event) {
     return;
   }
 
-  pendingActions.unshift({
+  const pendingAction = {
     actionLabel,
     draftKeys,
-    startedAt: Date.now()
-  });
+    editors: getDraftEditorsForContainer(container, actionLabel),
+    startedAt: Date.now(),
+    expiryTimer: null
+  };
+  pendingAction.editors.forEach((editor) => submittedEditors.add(editor));
+  pendingAction.expiryTimer = window.setTimeout(() => {
+    expirePendingAction(pendingAction);
+  }, PENDING_ACTION_TTL_MS);
+  pendingActions.unshift(pendingAction);
 
   prunePendingActions();
 }
@@ -432,6 +455,9 @@ function handleWindowMessage(event) {
   if (!pendingAction) {
     return;
   }
+  if (pendingAction.expiryTimer) {
+    window.clearTimeout(pendingAction.expiryTimer);
+  }
 
   clearDraftKeys(pendingAction.draftKeys)
     .then(() => {
@@ -442,12 +468,39 @@ function handleWindowMessage(event) {
     });
 }
 
-function scheduleSave(element) {
+function scheduleSave(element, eventType = "") {
   // While we are programmatically restoring a draft, the write (and the editor's own
   // re-normalization of it) must not be treated as fresh user input, or it would re-save
   // the restored value and compound line breaks. Both the input listeners and the editor
   // MutationObserver funnel through here, so this single guard covers all save triggers.
   if (restoringNow.has(element)) {
+    return;
+  }
+
+  // Salesforce can leave the submitted text in an editor briefly while it completes the
+  // UI transition. Ignore those late editor events so they cannot recreate a draft that a
+  // successful send/post has just cleared. A reused editor becomes eligible again as soon as
+  // Salesforce empties it, which lets the next message save normally.
+  if (submittedEditors.has(element)) {
+    if (hasUserValue(element)) {
+      return;
+    }
+    submittedEditors.delete(element);
+  }
+
+  // Clear an intentionally emptied field immediately. Waiting for the regular debounce
+  // window left a stale draft available for Salesforce's rerender/focus restore path, which
+  // made Backspace/Delete appear to fight the user.
+  if (!hasUserValue(element)) {
+    // `beforeinput`, `paste`, and `blur` can occur before the editor has applied a user
+    // change. Clearing at that point would discard a recoverable draft just as the user
+    // focuses it or starts typing, so wait for input/key/mutation events that reflect the
+    // editor's actual contents.
+    if (["beforeinput", "paste", "blur"].includes(eventType)) {
+      return;
+    }
+    cancelScheduledSave(element);
+    clearDraftForEmptyElement(element);
     return;
   }
 
@@ -477,6 +530,26 @@ function scheduleSave(element) {
   saveTimers.set(element, timerId);
 }
 
+function cancelScheduledSave(element) {
+  const timerId = saveTimers.get(element);
+  if (timerId) {
+    window.clearTimeout(timerId);
+  }
+  saveTimers.delete(element);
+}
+
+function clearDraftForEmptyElement(element) {
+  const meta = getDraftMetadata(element);
+  if (!meta) {
+    return;
+  }
+
+  trackDraftEditor(element, meta);
+  clearDraftKeys([meta.storageKey]).catch((error) => {
+    console.error("Salesforce Draft Guard failed to clear an empty draft.", error);
+  });
+}
+
 async function persistDraft(element) {
   const value = readElementValue(element);
   const rawHtml = readElementHtml(element);
@@ -495,13 +568,7 @@ async function persistDraft(element) {
   }
 
   if (!value.trim()) {
-    await removeDraftKeys([meta.storageKey]);
-    draftCache.delete(meta.storageKey);
-    toastedFieldKeys.delete(meta.storageKey);
-    const toastState = toastStateByElement.get(element);
-    if (toastState) {
-      toastState.toastShown = false;
-    }
+    await clearDraftKeys([meta.storageKey]);
     return;
   }
 
@@ -519,7 +586,11 @@ async function persistDraft(element) {
 
   draftCache.set(meta.storageKey, draft);
   trackDraftEditor(element, meta);
-  await setDraftValue(meta.storageKey, draft);
+  const mutationGeneration = getDraftGeneration(meta.storageKey);
+  await queueDraftStorageOperation(meta.storageKey, () => setDraftValue(meta.storageKey, draft));
+  if (getDraftGeneration(meta.storageKey) === mutationGeneration) {
+    clearedDraftKeys.delete(meta.storageKey);
+  }
   if (isEmailEditorElement(element)) {
     debugLog("email draft saved", {
       storageKey: meta.storageKey,
@@ -614,6 +685,13 @@ async function restoreDraft(element) {
     return;
   }
 
+  // A clear is authoritative even while Chrome storage finishes removing the old value.
+  // Without this tombstone, a freshly rerendered empty composer could read and restore that
+  // soon-to-be-removed value in the small gap after the user cleared or submitted it.
+  if (clearedDraftKeys.has(meta.storageKey)) {
+    return;
+  }
+
   const currentValue = readElementValue(element);
 
   let draft = draftCache.get(meta.storageKey);
@@ -683,20 +761,31 @@ async function clearDraftKeys(storageKeys) {
     return;
   }
 
+  markDraftKeysCleared(storageKeys);
+  await Promise.all(
+    storageKeys.map((storageKey) =>
+      queueDraftStorageOperation(storageKey, () => removeDraftKeys([storageKey]))
+    )
+  );
+}
+
+function markDraftKeysCleared(storageKeys) {
   storageKeys.forEach((key) => {
     draftCache.delete(key);
     toastedFieldKeys.delete(key);
+    clearedDraftKeys.add(key);
+    draftGenerations.set(key, getDraftGeneration(key) + 1);
   });
   for (const [element, meta] of trackedEditors.entries()) {
     if (!storageKeys.includes(meta.storageKey)) {
       continue;
     }
+    cancelScheduledSave(element);
     const toastState = toastStateByElement.get(element);
     if (toastState) {
       toastState.toastShown = false;
     }
   }
-  await removeDraftKeys(storageKeys);
 }
 
 function getDraftKeysForContainer(container, actionLabel = "") {
@@ -708,18 +797,46 @@ function getDraftKeysForContainer(container, actionLabel = "") {
   const scope = getContainerScope(container);
   const actionType = getContainerActionType(container);
   const normalizedAction = normalizeWhitespace(actionLabel).toLowerCase();
+  const emailScope = getEmailDraftScope(container);
+  if (normalizedAction === "send") {
+    keys.push(`${STORAGE_PREFIX}${emailScope}:${hashKey("email-body")}`);
+  }
   for (const meta of trackedEditors.values()) {
-    if (
-      meta.scope === scope &&
-      (meta.actionType === actionType ||
-        normalizedAction === meta.actionType ||
-        (normalizedAction === "send" && meta.actionType === "email"))
-    ) {
+    if (draftMetadataMatchesAction(meta, scope, actionType, normalizedAction, emailScope)) {
       keys.push(meta.storageKey);
     }
   }
 
   return Array.from(new Set(keys));
+}
+
+function getDraftEditorsForContainer(container, actionLabel = "") {
+  const editors = new Set(collectDraftEditors(container));
+  const scope = getContainerScope(container);
+  const actionType = getContainerActionType(container);
+  const normalizedAction = normalizeWhitespace(actionLabel).toLowerCase();
+  const emailScope = getEmailDraftScope(container);
+
+  for (const [element, meta] of trackedEditors.entries()) {
+    if (draftMetadataMatchesAction(meta, scope, actionType, normalizedAction, emailScope)) {
+      editors.add(element);
+    }
+  }
+
+  return Array.from(editors);
+}
+
+function draftMetadataMatchesAction(meta, scope, actionType, normalizedAction, emailScope) {
+  if (normalizedAction === "send" && meta.actionType === "email" && meta.scope === emailScope) {
+    return true;
+  }
+
+  return (
+    meta.scope === scope &&
+    (meta.actionType === actionType ||
+      normalizedAction === meta.actionType ||
+      (normalizedAction === "send" && meta.actionType === "email"))
+  );
 }
 
 function trackDraftEditor(element, meta) {
@@ -746,7 +863,7 @@ function getDraftMetadata(element) {
     // titles/aria-labels) that change on every page load, which broke key matching between save
     // and restore. Derive a canonical key from stable signals only — the record context plus a
     // fixed field id — so the Email draft restores reliably.
-    scope = hashKey(`${getRecordIdForScope(container)}::email`);
+    scope = getEmailDraftScope(container);
     fieldKey = hashKey("email-body");
   } else {
     scope = getContainerScope(container);
@@ -760,6 +877,10 @@ function getDraftMetadata(element) {
     label,
     storageKey: `${STORAGE_PREFIX}${scope}:${fieldKey}`
   };
+}
+
+function getEmailDraftScope(container) {
+  return hashKey(`${getRecordIdForScope(container)}::email`);
 }
 
 function getContainer(element) {
@@ -1520,9 +1641,54 @@ function prunePendingActions() {
   const now = Date.now();
   for (let index = pendingActions.length - 1; index >= 0; index -= 1) {
     if (now - pendingActions[index].startedAt > PENDING_ACTION_TTL_MS) {
-      pendingActions.splice(index, 1);
+      const [expiredAction] = pendingActions.splice(index, 1);
+      releaseExpiredPendingAction(expiredAction);
     }
   }
+}
+
+function expirePendingAction(pendingAction) {
+  const index = pendingActions.indexOf(pendingAction);
+  if (index === -1) {
+    return;
+  }
+
+  pendingActions.splice(index, 1);
+  releaseExpiredPendingAction(pendingAction);
+}
+
+function releaseExpiredPendingAction(pendingAction) {
+  if (!pendingAction) {
+    return;
+  }
+  if (pendingAction.expiryTimer) {
+    window.clearTimeout(pendingAction.expiryTimer);
+  }
+
+  // No successful save was observed. Resume normal draft protection for the existing text
+  // so a failed submission never discards the user's work.
+  (pendingAction.editors || []).forEach((editor) => {
+    submittedEditors.delete(editor);
+    if (hasUserValue(editor)) {
+      scheduleSave(editor);
+    }
+  });
+}
+
+function getDraftGeneration(storageKey) {
+  return draftGenerations.get(storageKey) || 0;
+}
+
+function queueDraftStorageOperation(storageKey, operation) {
+  const previous = draftStorageQueues.get(storageKey) || Promise.resolve();
+  const queued = previous.catch(() => {}).then(operation);
+  draftStorageQueues.set(storageKey, queued);
+
+  return queued.finally(() => {
+    if (draftStorageQueues.get(storageKey) === queued) {
+      draftStorageQueues.delete(storageKey);
+    }
+  });
 }
 
 async function getDraftValue(key) {

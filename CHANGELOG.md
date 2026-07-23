@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.5.0] - 2026-07-23
+
+### Fixed
+- Fixed Post and Email drafts reappearing after a successful Post or Send. Delayed editor
+  saves are cancelled when Salesforce confirms the submission, and late transition events from
+  the submitted composer are ignored until it has been cleared for the next message.
+- Fixed deleted Post and Email text being restored while the user was still editing. Empty
+  editors now remove their stored draft immediately instead of waiting for the autosave delay.
+- Serialized draft save and removal operations per draft key, preventing a late save from
+  overwriting a newer clear operation.
+
+### Changed
+- Bumped the extension version to 0.5.0.
+
 ## [0.4.1] - 2026-07-19
 
 Immediate hotfix for drafts being restored into unrelated Salesforce record fields, including

@@ -97,7 +97,7 @@ function loadContentScript(extraCode = "") {
     closest: () => null
   };
 
-  vm.runInNewContext(`${source}\n${extraCode}`, sandbox);
+  return vm.runInNewContext(`${source}\n${extraCode}`, sandbox);
 }
 
 test("stable page context ignores volatile params and uses the top URL", () => {
@@ -147,14 +147,34 @@ test("submit clearing includes tracked Email editor keys for the same page scope
       closest: () => null
     };
 
-    const scope = getContainerScope(container);
+    const scope = getEmailDraftScope(container);
     trackedEditors.set({ nodeType: 1 }, {
       scope,
       actionType: "email",
       storageKey: "sfdg:draft:test"
     });
 
-    assert.deepEqual(getDraftKeysForContainer(container, "send"), ["sfdg:draft:test"]);
+    const canonical = STORAGE_PREFIX + getEmailDraftScope(container) + ":" + hashKey("email-body");
+    assert.deepEqual(getDraftKeysForContainer(container, "send"), [canonical, "sfdg:draft:test"]);
+  `);
+});
+
+test("Send clears the canonical Email key even when CKEditor is in another frame", () => {
+  loadContentScript(`
+    const container = {
+      nodeType: 1,
+      tagName: "DIV",
+      dataset: {},
+      textContent: "Send Email",
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      getAttribute: () => "",
+      matches: () => false,
+      closest: () => null
+    };
+
+    const expected = STORAGE_PREFIX + getEmailDraftScope(container) + ":" + hashKey("email-body");
+    assert.deepEqual(getDraftKeysForContainer(container, "send"), [expected]);
   `);
 });
 
@@ -271,9 +291,87 @@ test("restore guard prevents a programmatic restore from scheduling a save", () 
     scheduleSave(guarded);
     assert.equal(saveTimers.has(guarded), false);
 
-    const normal = { nodeType: 1, tagName: "DIV" };
+    const normal = {
+      nodeType: 1,
+      tagName: "INPUT",
+      value: "Draft text",
+      getAttribute: () => ""
+    };
     scheduleSave(normal);
     assert.equal(saveTimers.has(normal), true);
+  `);
+});
+
+test("empty input clears immediately while pre-input events leave a draft alone", () => {
+  loadContentScript(`
+    const empty = {
+      nodeType: 1,
+      tagName: "INPUT",
+      value: "",
+      getAttribute: () => ""
+    };
+    let clears = 0;
+    clearDraftForEmptyElement = () => {
+      clears += 1;
+    };
+
+    scheduleSave(empty, "beforeinput");
+    assert.equal(clears, 0);
+
+    scheduleSave(empty, "input");
+    assert.equal(clears, 1);
+    assert.equal(saveTimers.has(empty), false);
+  `);
+});
+
+test("submitted editor content cannot schedule a late draft save", () => {
+  loadContentScript(`
+    const submitted = {
+      nodeType: 1,
+      tagName: "INPUT",
+      value: "Already sent text",
+      getAttribute: () => ""
+    };
+    submittedEditors.add(submitted);
+
+    scheduleSave(submitted, "input");
+    assert.equal(saveTimers.has(submitted), false);
+  `);
+});
+
+test("a draft clear received from another frame cancels its pending autosave", () => {
+  loadContentScript(`
+    const editor = { nodeType: 1, tagName: "DIV" };
+    const key = "sfdg:draft:email";
+    trackedEditors.set(editor, { storageKey: key });
+    saveTimers.set(editor, 1);
+
+    handleStorageChange({ [key]: { oldValue: { value: "sent" }, newValue: undefined } }, "session");
+    assert.equal(saveTimers.has(editor), false);
+    assert.equal(clearedDraftKeys.has(key), true);
+  `);
+});
+
+test("draft storage operations for a key run in save/clear order", async () => {
+  await loadContentScript(`
+    (async () => {
+      const operations = [];
+      let releaseFirst;
+      const first = queueDraftStorageOperation("draft-key", () => new Promise((resolve) => {
+        operations.push("save");
+        releaseFirst = resolve;
+      }));
+      const second = queueDraftStorageOperation("draft-key", () => {
+        operations.push("clear");
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      assert.deepEqual(operations, ["save"]);
+      releaseFirst();
+      await Promise.all([first, second]);
+      assert.deepEqual(operations, ["save", "clear"]);
+    })()
   `);
 });
 

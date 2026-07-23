@@ -17,7 +17,7 @@ This first version uses heuristics because Salesforce Lightning markup and reque
 - It derives draft keys from more stable Salesforce signals such as record id, action type, field semantics, and field position.
 - It normalizes Email iframe editors against the top Salesforce page context when that context is accessible, so saved and restored Email body keys stay aligned.
 - It marks the active composer as pending-clear when the user clicks `Send`, `Share`, `Save`, `Post`, or `Log a Call`.
-- It clears only the draft keys captured from that composer when Salesforce then issues a successful related `POST`, `PUT`, or `PATCH` request.
+- It clears only the draft keys captured from that composer when Salesforce then issues a successful, composer-matching `POST`, `PUT`, or `PATCH` request. Record Details saves do not clear Email or Post drafts.
 - It shows configurable toast notifications for save, restore, and clear events, including position, size, save-confirmation frequency, colors, and optional sound.
 
 That is intentionally conservative, but not perfect. Expect some tuning against your specific Salesforce UI.

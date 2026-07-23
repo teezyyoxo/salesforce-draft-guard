@@ -25,7 +25,6 @@
     // the user hasn't actually submitted.
     return [
       "/chatter/feed-elements",
-      "/connect/records",
       "/emailMessages",
       "/email/simple",
       "/tasks",

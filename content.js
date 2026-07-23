@@ -451,10 +451,16 @@ function handleWindowMessage(event) {
 
   prunePendingActions();
 
-  const pendingAction = pendingActions.shift();
-  if (!pendingAction) {
+  // A Salesforce record page issues many save-like requests. Only consume a pending composer
+  // action when the completed request is compatible with that composer; otherwise an unrelated
+  // Details save can clear an Email or Post draft that the user has not submitted.
+  const pendingActionIndex = pendingActions.findIndex((pendingAction) =>
+    networkResultMatchesPendingAction(event.data.detail, pendingAction)
+  );
+  if (pendingActionIndex === -1) {
     return;
   }
+  const [pendingAction] = pendingActions.splice(pendingActionIndex, 1);
   if (pendingAction.expiryTimer) {
     window.clearTimeout(pendingAction.expiryTimer);
   }
@@ -789,15 +795,17 @@ function markDraftKeysCleared(storageKeys) {
 }
 
 function getDraftKeysForContainer(container, actionLabel = "") {
-  const keys = collectDraftEditors(container)
-    .map((element) => getDraftMetadata(element))
-    .filter(Boolean)
-    .map((meta) => meta.storageKey);
-
   const scope = getContainerScope(container);
   const actionType = getContainerActionType(container);
   const normalizedAction = normalizeWhitespace(actionLabel).toLowerCase();
   const emailScope = getEmailDraftScope(container);
+  const keys = collectDraftEditors(container)
+    .map((element) => getDraftMetadata(element))
+    .filter((meta) => draftMetadataMatchesAction(meta, scope, actionType, normalizedAction, emailScope))
+    .map((meta) => meta.storageKey);
+
+  // The CKEditor Email body is in a separate frame, so the top-page Send button cannot
+  // enumerate it directly. Its canonical key is safe to include only for Send.
   if (normalizedAction === "send") {
     keys.push(`${STORAGE_PREFIX}${emailScope}:${hashKey("email-body")}`);
   }
@@ -811,11 +819,16 @@ function getDraftKeysForContainer(container, actionLabel = "") {
 }
 
 function getDraftEditorsForContainer(container, actionLabel = "") {
-  const editors = new Set(collectDraftEditors(container));
   const scope = getContainerScope(container);
   const actionType = getContainerActionType(container);
   const normalizedAction = normalizeWhitespace(actionLabel).toLowerCase();
   const emailScope = getEmailDraftScope(container);
+  const editors = new Set(
+    collectDraftEditors(container).filter((element) => {
+      const meta = getDraftMetadata(element);
+      return draftMetadataMatchesAction(meta, scope, actionType, normalizedAction, emailScope);
+    })
+  );
 
   for (const [element, meta] of trackedEditors.entries()) {
     if (draftMetadataMatchesAction(meta, scope, actionType, normalizedAction, emailScope)) {
@@ -827,8 +840,20 @@ function getDraftEditorsForContainer(container, actionLabel = "") {
 }
 
 function draftMetadataMatchesAction(meta, scope, actionType, normalizedAction, emailScope) {
+  if (!meta) {
+    return false;
+  }
+
   if (normalizedAction === "send" && meta.actionType === "email" && meta.scope === emailScope) {
     return true;
+  }
+
+  // A generic record Details "Save" is not a composer submission. Limit Save cleanup to
+  // activity composers that have an explicit, stable action type; this keeps inactive Email
+  // and Post editors out of the pending action even if Salesforce gives their common record
+  // ancestor a broad container scope.
+  if (normalizedAction === "save" && !["log-a-call", "note"].includes(actionType)) {
+    return false;
   }
 
   return (
@@ -837,6 +862,29 @@ function draftMetadataMatchesAction(meta, scope, actionType, normalizedAction, e
       normalizedAction === meta.actionType ||
       (normalizedAction === "send" && meta.actionType === "email"))
   );
+}
+
+function networkResultMatchesPendingAction(detail, pendingAction) {
+  if (!detail || !pendingAction) {
+    return false;
+  }
+
+  const url = String(detail.url || "").toLowerCase();
+  const actionLabel = normalizeWhitespace(pendingAction.actionLabel || "").toLowerCase();
+
+  if (actionLabel === "send") {
+    return url.includes("/emailmessages") || url.includes("/email/simple");
+  }
+
+  if (actionLabel === "post" || actionLabel === "share") {
+    return url.includes("/chatter/feed-elements");
+  }
+
+  if (actionLabel === "log a call" || actionLabel === "save") {
+    return ["/tasks", "/events", "/notes"].some((fragment) => url.includes(fragment));
+  }
+
+  return false;
 }
 
 function trackDraftEditor(element, meta) {

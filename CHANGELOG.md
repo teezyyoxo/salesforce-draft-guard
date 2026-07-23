@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.5.1] - 2026-07-23
+
+### Fixed
+- Fixed an unrelated record Details save being able to clear an unsent Email or Post draft.
+  Cleanup now includes only drafts belonging to the submitted composer, and requires the
+  corresponding Email, Chatter Post, or activity-save response before removing a draft.
+- Removed the broad `/connect/records` network match. Salesforce uses that endpoint for
+  record-detail work as well as other UI traffic, so it is not evidence that a draft was sent.
+
+### Changed
+- Bumped the extension version to 0.5.1.
+
 ## [0.5.0] - 2026-07-23
 
 ### Fixed

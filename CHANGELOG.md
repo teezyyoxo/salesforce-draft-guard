@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.5.2] - 2026-07-27
+
+### Fixed
+- Fixed submitting a Post being able to discard a simultaneous, unsent Email draft. Salesforce
+  can empty or replace inactive composers as part of the Post transition; those lifecycle
+  mutations are no longer interpreted as the user deliberately clearing an Email draft.
+- Empty-draft cleanup now requires a trusted user `input` event. Successful Post and Email
+  submissions continue to clear only the draft belonging to that submitted composer.
+- Flush pending editor saves when a Salesforce tab is hidden or unloaded, so a reload or tab
+  close does not lose text that is still within the normal typing debounce window.
+
+### Changed
+- Bumped the extension version to 0.5.2.
+
 ## [0.5.1] - 2026-07-23
 
 ### Fixed

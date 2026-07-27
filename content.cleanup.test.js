@@ -97,3 +97,40 @@ test("only matching Email and Post submission responses consume their pending ac
     true
   );
 });
+
+test("a Post submission cannot target a simultaneous Email draft", () => {
+  const { draftMetadataMatchesAction } = loadDraftGuardFunctions();
+  const postScope = "post-scope";
+  const emailScope = "email-scope";
+
+  assert.equal(
+    draftMetadataMatchesAction(
+      { actionType: "email", scope: emailScope },
+      postScope,
+      "post",
+      "post",
+      emailScope
+    ),
+    false
+  );
+  assert.equal(
+    draftMetadataMatchesAction(
+      { actionType: "post", scope: postScope },
+      postScope,
+      "post",
+      "post",
+      emailScope
+    ),
+    true
+  );
+});
+
+test("only a user edit may clear an empty draft", () => {
+  const { shouldClearDraftForEmptyEvent } = loadDraftGuardFunctions();
+
+  assert.equal(shouldClearDraftForEmptyEvent("input", true), true);
+  assert.equal(shouldClearDraftForEmptyEvent("keyup", true), false);
+  assert.equal(shouldClearDraftForEmptyEvent("mutation", false), false);
+  assert.equal(shouldClearDraftForEmptyEvent("input", false), false);
+  assert.equal(shouldClearDraftForEmptyEvent("blur", true), false);
+});

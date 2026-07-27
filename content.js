@@ -321,8 +321,36 @@ function bindGlobalListeners() {
   document.addEventListener("blur", handleInputEvent, true);
   document.addEventListener("focusin", handleFocusEvent, true);
   document.addEventListener("click", handleClickEvent, true);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.addEventListener("pagehide", flushPendingDrafts);
   window.addEventListener("message", handleWindowMessage);
   chrome.storage.onChanged.addListener(handleStorageChange);
+}
+
+function handleVisibilityChange() {
+  // Hidden is dispatched before a tab is discarded or closed, while the document is still
+  // usable. Flushing here covers a reload/close that happens before the normal 700 ms typing
+  // debounce expires; pagehide below provides a second chance for browser navigation.
+  if (document.visibilityState === "hidden") {
+    flushPendingDrafts();
+  }
+}
+
+function flushPendingDrafts() {
+  // A CKEditor Email body may be tracked through its iframe rather than discovered by a query
+  // from the top document, so include both sources. Duplicate entries are intentionally folded
+  // together before saving.
+  const editors = new Set([...collectDraftEditors(document), ...trackedEditors.keys()]);
+  editors.forEach((editor) => {
+    cancelScheduledSave(editor);
+    if (!hasUserValue(editor)) {
+      return;
+    }
+
+    persistDraft(editor).catch((error) => {
+      console.error("Salesforce Draft Guard failed to flush a draft before page exit.", error);
+    });
+  });
 }
 
 function handleFocusEvent(event) {
@@ -408,7 +436,7 @@ function handleInputEvent(event) {
     return;
   }
 
-  scheduleSave(target, event.type);
+  scheduleSave(target, event.type, event.isTrusted);
 }
 
 function handleClickEvent(event) {
@@ -474,7 +502,7 @@ function handleWindowMessage(event) {
     });
 }
 
-function scheduleSave(element, eventType = "") {
+function scheduleSave(element, eventType = "", eventIsTrusted = true) {
   // While we are programmatically restoring a draft, the write (and the editor's own
   // re-normalization of it) must not be treated as fresh user input, or it would re-save
   // the restored value and compound line breaks. Both the input listeners and the editor
@@ -498,11 +526,12 @@ function scheduleSave(element, eventType = "") {
   // window left a stale draft available for Salesforce's rerender/focus restore path, which
   // made Backspace/Delete appear to fight the user.
   if (!hasUserValue(element)) {
-    // `beforeinput`, `paste`, and `blur` can occur before the editor has applied a user
-    // change. Clearing at that point would discard a recoverable draft just as the user
-    // focuses it or starts typing, so wait for input/key/mutation events that reflect the
-    // editor's actual contents.
-    if (["beforeinput", "paste", "blur"].includes(eventType)) {
+    // Salesforce frequently empties, replaces, or hides inactive composers as part of a
+    // different composer being submitted. Those lifecycle mutations are not evidence that
+    // the user erased this draft. Only a trusted input event can clear an empty draft;
+    // the observer's unlabelled mutations and synthetic editor events can still save content
+    // but may never discard it.
+    if (!shouldClearDraftForEmptyEvent(eventType, eventIsTrusted)) {
       return;
     }
     cancelScheduledSave(element);
@@ -534,6 +563,10 @@ function scheduleSave(element, eventType = "") {
   }, SAVE_DELAY_MS);
 
   saveTimers.set(element, timerId);
+}
+
+function shouldClearDraftForEmptyEvent(eventType, eventIsTrusted) {
+  return Boolean(eventIsTrusted) && eventType === "input";
 }
 
 function cancelScheduledSave(element) {
@@ -1567,7 +1600,10 @@ function ensureDraftObserver(element) {
       return;
     }
 
-    scheduleSave(element);
+    // A rich-text editor can mutate its DOM as Salesforce rerenders, switches publisher
+    // tabs, or submits another composer. Do not let those untrusted lifecycle mutations
+    // delete an otherwise recoverable draft when the editor is temporarily empty.
+    scheduleSave(element, "mutation", false);
   });
 
   observer.observe(element, {

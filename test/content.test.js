@@ -108,6 +108,30 @@ test("stable page context ignores volatile params and uses the top URL", () => {
   `);
 });
 
+test("page exit flushes filled editors, including tracked iframe editors", () => {
+  loadContentScript(`
+    const visibleEditor = { id: "visible" };
+    const iframeEditor = { id: "iframe" };
+    const emptyEditor = { id: "empty" };
+    const cancelled = [];
+    const persisted = [];
+
+    collectDraftEditors = () => [visibleEditor, emptyEditor];
+    hasUserValue = (editor) => editor !== emptyEditor;
+    cancelScheduledSave = (editor) => cancelled.push(editor.id);
+    persistDraft = (editor) => {
+      persisted.push(editor.id);
+      return Promise.resolve();
+    };
+    trackedEditors.set(iframeEditor, { storageKey: "sfdg:draft:email" });
+
+    flushPendingDrafts();
+
+    assert.deepEqual(cancelled, ["visible", "empty", "iframe"]);
+    assert.deepEqual(persisted, ["visible", "iframe"]);
+  `);
+});
+
 test("scanAndRestore attaches an Email iframe when the iframe is the mutation root", () => {
   loadContentScript(`
     let attached = 0;

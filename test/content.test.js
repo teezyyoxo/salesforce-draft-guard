@@ -108,15 +108,17 @@ test("stable page context ignores volatile params and uses the top URL", () => {
   `);
 });
 
-test("page exit flushes filled editors, including tracked iframe editors", () => {
+test("page exit flushes only unsent filled editors, including tracked iframe editors", () => {
   loadContentScript(`
     const visibleEditor = { id: "visible" };
     const iframeEditor = { id: "iframe" };
     const emptyEditor = { id: "empty" };
+    const submittedEditor = { id: "submitted" };
+    const clearedEditor = { id: "cleared" };
     const cancelled = [];
     const persisted = [];
 
-    collectDraftEditors = () => [visibleEditor, emptyEditor];
+    collectDraftEditors = () => [visibleEditor, emptyEditor, submittedEditor, clearedEditor];
     hasUserValue = (editor) => editor !== emptyEditor;
     cancelScheduledSave = (editor) => cancelled.push(editor.id);
     persistDraft = (editor) => {
@@ -124,10 +126,13 @@ test("page exit flushes filled editors, including tracked iframe editors", () =>
       return Promise.resolve();
     };
     trackedEditors.set(iframeEditor, { storageKey: "sfdg:draft:email" });
+    trackedEditors.set(clearedEditor, { storageKey: "sfdg:draft:sent-email" });
+    submittedEditors.add(submittedEditor);
+    clearedDraftKeys.add("sfdg:draft:sent-email");
 
     flushPendingDrafts();
 
-    assert.deepEqual(cancelled, ["visible", "empty", "iframe"]);
+    assert.deepEqual(cancelled, ["visible", "empty", "submitted", "cleared", "iframe"]);
     assert.deepEqual(persisted, ["visible", "iframe"]);
   `);
 });

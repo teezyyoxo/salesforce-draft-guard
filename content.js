@@ -343,7 +343,7 @@ function flushPendingDrafts() {
   const editors = new Set([...collectDraftEditors(document), ...trackedEditors.keys()]);
   editors.forEach((editor) => {
     cancelScheduledSave(editor);
-    if (!hasUserValue(editor)) {
+    if (!shouldPersistDraftOnPageExit(editor)) {
       return;
     }
 
@@ -351,6 +351,21 @@ function flushPendingDrafts() {
       console.error("Salesforce Draft Guard failed to flush a draft before page exit.", error);
     });
   });
+}
+
+function shouldPersistDraftOnPageExit(editor) {
+  // Salesforce can keep submitted Post/Email text mounted until its next view has loaded.
+  // A visibilitychange/pagehide flush must not turn that already-submitted text back into a
+  // local draft after the matching successful request has cleared it.
+  if (submittedEditors.has(editor) || !hasUserValue(editor)) {
+    return false;
+  }
+
+  // CKEditor Email bodies are handled by a separate content-script instance, so that frame
+  // cannot always see the outer Send click. Storage-change cleanup shares this tombstone with
+  // it; honoring it here prevents a late iframe page-exit flush from recreating a sent draft.
+  const meta = trackedEditors.get(editor) || getDraftMetadata(editor);
+  return !meta || !clearedDraftKeys.has(meta.storageKey);
 }
 
 function handleFocusEvent(event) {

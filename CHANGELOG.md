@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.5.3] - 2026-07-28
+
+### Fixed
+- Fixed sent Post and Email text being restored as a new draft. The page-exit draft flush now
+  skips submitted composers and drafts already cleared after a matching successful Salesforce
+  submission, including Email bodies managed inside CKEditor frames. Unsent rich-text drafts
+  continue to retain their formatting and inline attachments.
+
+### Changed
+- Bumped the extension version to 0.5.3.
+
 ## [0.5.2] - 2026-07-27
 
 ### Fixed

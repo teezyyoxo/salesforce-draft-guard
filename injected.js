@@ -16,21 +16,25 @@
   };
 
   const looksRelevant = (url) => {
-    if (!url) {
+    const normalizedUrl = String(url || "").toLowerCase();
+    if (!normalizedUrl) {
       return false;
     }
 
     // Match only the specific save/send resources for the composers we support, not the
-    // broad "/services/data/" base, so routine background reads/polls don't clear a draft
-    // the user hasn't actually submitted.
+    // broad "/services/data/" or Aura bases, so routine background reads/polls don't clear
+    // a draft the user hasn't actually submitted. Salesforce Lightning's standard Chatter
+    // and Email quick actions submit through named Aura actions rather than REST endpoints.
     return [
       "/chatter/feed-elements",
-      "/emailMessages",
+      "/emailmessages",
       "/email/simple",
       "/tasks",
       "/events",
-      "/notes"
-    ].some((fragment) => url.includes(fragment));
+      "/notes",
+      "forcechatter-chatter.feeditemaction.create",
+      "emailquickaction.logsuccessfulsending"
+    ].some((fragment) => normalizedUrl.includes(fragment));
   };
 
   const originalFetch = window.fetch;

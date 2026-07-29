@@ -96,6 +96,27 @@ test("only matching Email and Post submission responses consume their pending ac
     ),
     true
   );
+  assert.equal(
+    networkResultMatchesPendingAction(
+      { url: "/aura?r=3628&ui-chatter-components-aura-components-forceChatter-chatter.FeedItemAction.create=1" },
+      { actionLabel: "share" }
+    ),
+    true
+  );
+  assert.equal(
+    networkResultMatchesPendingAction(
+      { url: "/aura?r=3869&ui-support-components-aura-components-emailquickaction.EmailQuickAction.logSuccessfulSending=1" },
+      { actionLabel: "send" }
+    ),
+    true
+  );
+  assert.equal(
+    networkResultMatchesPendingAction(
+      { url: "/aura?r=3866&ui-force-components-controllers-recordGlobalValueProvider.RecordGvp.saveQuickActionRecords=1" },
+      { actionLabel: "send" }
+    ),
+    false
+  );
 });
 
 test("a Post submission cannot target a simultaneous Email draft", () => {

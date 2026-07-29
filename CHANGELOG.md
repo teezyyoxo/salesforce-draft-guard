@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.5.4] - 2026-07-29
+
+### Fixed
+- Fixed successful Chatter Share and Email Send actions not clearing their local drafts in
+  Salesforce Lightning orgs that submit through Aura rather than REST endpoints. Draft cleanup
+  now recognizes the submission-specific `FeedItemAction.create` and
+  `EmailQuickAction.logSuccessfulSending` Aura callbacks.
+- Kept generic Aura quick-action saves excluded so unrelated Salesforce record saves cannot
+  clear an unsent draft.
+
 ## [0.5.3] - 2026-07-28
 
 ### Fixed

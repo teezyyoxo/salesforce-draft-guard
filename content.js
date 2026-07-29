@@ -921,11 +921,15 @@ function networkResultMatchesPendingAction(detail, pendingAction) {
   const actionLabel = normalizeWhitespace(pendingAction.actionLabel || "").toLowerCase();
 
   if (actionLabel === "send") {
-    return url.includes("/emailmessages") || url.includes("/email/simple");
+    return (
+      url.includes("/emailmessages") ||
+      url.includes("/email/simple") ||
+      url.includes("emailquickaction.logsuccessfulsending")
+    );
   }
 
   if (actionLabel === "post" || actionLabel === "share") {
-    return url.includes("/chatter/feed-elements");
+    return url.includes("/chatter/feed-elements") || url.includes("forcechatter-chatter.feeditemaction.create");
   }
 
   if (actionLabel === "log a call" || actionLabel === "save") {

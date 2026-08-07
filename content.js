@@ -980,7 +980,10 @@ function getDraftMetadata(element) {
 }
 
 function getEmailDraftScope(container) {
-  return hashKey(`${getRecordIdForScope(container)}::email`);
+  // Email drafts are stored using the top-level record context, not the iframe-local
+  // document context. This keeps the Email body draft key stable across the separate
+  // CKEditor iframe and the outer page that owns the Send action.
+  return hashKey(`${getRecordIdForScope(getPageDocument().body)}::email`);
 }
 
 function getContainer(element) {

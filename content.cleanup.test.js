@@ -146,6 +146,26 @@ test("a Post submission cannot target a simultaneous Email draft", () => {
   );
 });
 
+test("email draft scope is derived from the top-level record id", () => {
+  const context = loadDraftGuardFunctions();
+  const emailBody = {
+    nodeType: 1,
+    closest: () => null,
+    getAttribute: () => null,
+    matches: () => false,
+    classList: { contains: () => true },
+    ownerDocument: { body: { nodeType: 1, querySelector: () => ({ getAttribute: () => "500000000000001" }) } }
+  };
+
+  context.document.body = {
+    nodeType: 1,
+    querySelector: () => ({ getAttribute: () => "500000000000001" })
+  };
+
+  const expectedScope = context.hashKey("500000000000001::email");
+  assert.equal(context.getEmailDraftScope(emailBody), expectedScope);
+});
+
 test("only a user edit may clear an empty draft", () => {
   const { shouldClearDraftForEmptyEvent } = loadDraftGuardFunctions();
 

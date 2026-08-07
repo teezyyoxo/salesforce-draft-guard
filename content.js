@@ -1313,6 +1313,10 @@ function resetEmailEditorViewport(element) {
     ownerDocument.body.scrollTop = 0;
     ownerDocument.body.scrollLeft = 0;
   }
+  const ownerWindow = ownerDocument.defaultView || window;
+  if (ownerWindow && typeof ownerWindow.scrollTo === "function") {
+    ownerWindow.scrollTo(0, 0);
+  }
 }
 
 function insertViaPaste(element, ownerDocument, draft) {
@@ -1328,7 +1332,11 @@ function insertViaPaste(element, ownerDocument, draft) {
   }
 
   try {
-    element.focus();
+    try {
+      element.focus({ preventScroll: true });
+    } catch (error) {
+      element.focus();
+    }
     if (typeof ownerDocument.getSelection === "function" && typeof ownerDocument.createRange === "function") {
       const selection = ownerDocument.getSelection();
       if (selection && typeof selection.removeAllRanges === "function") {

@@ -157,6 +157,36 @@ test("scanAndRestore attaches an Email iframe when the iframe is the mutation ro
   `);
 });
 
+test("insertViaPaste focuses without scrolling when supported", () => {
+  loadContentScript(`
+    let focusArgument = null;
+    const fakeElement = {
+      focus: (arg) => { focusArgument = arg; },
+      dispatchEvent: () => {},
+      innerHTML: "",
+      ownerDocument: document
+    };
+    document.createRange = () => ({
+      selectNodeContents: () => {},
+      collapse: () => {}
+    });
+    document.getSelection = () => ({
+      removeAllRanges: () => {},
+      addRange: () => {}
+    });
+    window.DataTransfer = class {
+      constructor() { this.data = {}; }
+      setData(type, value) { this.data[type] = value; }
+    };
+    window.ClipboardEvent = class {
+      constructor(type, options) { this.clipboardData = options.dataTransfer; }
+    };
+
+    insertViaPaste(fakeElement, fakeElement.ownerDocument, { text: "hello" });
+    assert.deepEqual(focusArgument, { preventScroll: true });
+  `);
+});
+
 test("editable value normalization removes editor-added trailing line breaks", () => {
   loadContentScript(`
     assert.equal(normalizeEditableValue("First line\\r\\nSecond line\\n\\n"), "First line\\nSecond line");

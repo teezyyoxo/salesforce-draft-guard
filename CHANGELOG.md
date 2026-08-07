@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.5.5] - 2026-08-07
+
+### Fixed
+- Fixed draft restoration in Email and Post composers from causing the browser to auto-scroll
+  the page toward the bottom of the editor. Restores now focus the target editor with
+  `preventScroll` and reset the iframe/document viewport to keep the page position stable.
+
+### Changed
+- Bumped the extension version to 0.5.5.
+
 ## [0.5.4] - 2026-07-29
 
 ### Fixed

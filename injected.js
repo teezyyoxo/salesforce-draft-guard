@@ -15,26 +15,46 @@
     );
   };
 
-  const looksRelevant = (url) => {
-    const normalizedUrl = String(url || "").toLowerCase();
-    if (!normalizedUrl) {
-      return false;
+  const requestBodyText = (body) => {
+    if (typeof body === "string") {
+      return body;
+    }
+    if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+      return body.toString();
+    }
+    return "";
+  };
+
+  const getRequestSignals = (url, body) => {
+    // Aura endpoints frequently keep the action descriptor in the POST body rather than the
+    // URL. Inspect only for action identifiers and emit booleans; never send draft content or
+    // the request body back into the content script.
+    const fingerprint = `${String(url || "")} ${requestBodyText(body)}`.toLowerCase();
+    const signals = [];
+
+    if (
+      fingerprint.includes("/emailmessages") ||
+      fingerprint.includes("/email/simple") ||
+      fingerprint.includes("emailquickaction.logsuccessfulsending")
+    ) {
+      signals.push("email-send");
+    }
+    if (
+      fingerprint.includes("/chatter/feed-elements") ||
+      fingerprint.includes("forcechatter-chatter.feeditemaction.create") ||
+      fingerprint.includes("feeditemaction.create")
+    ) {
+      signals.push("post-submit");
+    }
+    if (
+      ["/tasks", "/events", "/notes"].some((fragment) => fingerprint.includes(fragment)) ||
+      fingerprint.includes("recordgvp.savequickactionrecords") ||
+      fingerprint.includes("savequickactionrecords")
+    ) {
+      signals.push("activity-save");
     }
 
-    // Match only the specific save/send resources for the composers we support, not the
-    // broad "/services/data/" or Aura bases, so routine background reads/polls don't clear
-    // a draft the user hasn't actually submitted. Salesforce Lightning's standard Chatter
-    // and Email quick actions submit through named Aura actions rather than REST endpoints.
-    return [
-      "/chatter/feed-elements",
-      "/emailmessages",
-      "/email/simple",
-      "/tasks",
-      "/events",
-      "/notes",
-      "forcechatter-chatter.feeditemaction.create",
-      "emailquickaction.logsuccessfulsending"
-    ].some((fragment) => normalizedUrl.includes(fragment));
+    return signals;
   };
 
   const originalFetch = window.fetch;
@@ -51,17 +71,19 @@
             : input && typeof input === "object" && "url" in input
               ? input.url
               : "";
+        const signals = getRequestSignals(url, init && init.body);
 
         if (
           ["POST", "PUT", "PATCH"].includes(String(method).toUpperCase()) &&
           response &&
           response.ok &&
-          looksRelevant(String(url))
+          signals.length
         ) {
           postNetworkResult({
             transport: "fetch",
             method: String(method).toUpperCase(),
             url: String(url),
+            signals,
             ok: true,
             status: response.status
           });
@@ -89,19 +111,23 @@
     return originalOpen.apply(this, arguments);
   };
 
-  XMLHttpRequest.prototype.send = function patchedSend() {
+  XMLHttpRequest.prototype.send = function patchedSend(body) {
+    if (this.__sfdgRequest) {
+      this.__sfdgRequest.signals = getRequestSignals(this.__sfdgRequest.url, body);
+    }
     this.addEventListener("load", function onLoad() {
       const request = this.__sfdgRequest || {};
       if (
         ["POST", "PUT", "PATCH"].includes(request.method) &&
         this.status >= 200 &&
         this.status < 400 &&
-        looksRelevant(request.url)
+        request.signals && request.signals.length
       ) {
         postNetworkResult({
           transport: "xhr",
           method: request.method,
           url: request.url,
+          signals: request.signals,
           ok: true,
           status: this.status
         });

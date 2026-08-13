@@ -14,7 +14,7 @@ Chrome extension that protects Salesforce activity drafts from accidental refres
 This first version uses heuristics because Salesforce Lightning markup and request flows vary by org and feature:
 
 - It watches `textarea`, text `input`, and `contenteditable` fields that appear related to messages, posts, calls, notes, or descriptions.
-- It derives draft keys from more stable Salesforce signals such as record id, action type, field semantics, and field position.
+- It derives draft keys from Chrome tab id, the nearest mounted Salesforce record id, structural action type, and stable field semantics. Drafts remain isolated across Cases, browser tabs, and mounted Salesforce console workspace tabs.
 - It normalizes Email iframe editors against the top Salesforce page context when that context is accessible, so saved and restored Email body keys stay aligned.
 - It marks the active composer as pending-clear when the user clicks `Send`, `Share`, `Save`, `Post`, or `Log a Call`.
 - It clears only the draft keys captured from that composer when Salesforce then issues a successful, composer-matching `POST`, `PUT`, or `PATCH` request. Record Details saves do not clear Email or Post drafts.
@@ -51,8 +51,11 @@ git push -u origin codex/salesforce-draft-guard
 
 ```bash
 node --check content.js
+node --check injected.js
 node --check options.js
-node --test test/content.test.js
+node --check popup.js
+node --check background.js
+node --test
 ```
 
 ## Debug logging
@@ -88,6 +91,8 @@ Use this section as a lightweight backlog until we move to GitHub Issues/Project
 | DG-010 | P1 | Draft restore | Open | After a restored draft, backspace/delete appeared to do nothing (could only add text). | Resolved in 0.3.1 by restoring at most once per editor element and only into empty fields; tracked here for manual re-verification. | Re-verify in Post and Email that deleting/backspacing through restored content works normally. |
 | DG-011 | P1 | Draft restore | Resolved in 0.3.3 (2026-06-04) | A saved Post draft did not restore if the Email tab was opened before Post after a refresh. | The Post composer is hidden when Email is active; restoring into a hidden editor failed but the element was marked handled. Restore now defers while a field is not rendered and retries on focus/re-scan. | Re-verify: save a Post draft, refresh, open Email, then return to Post and confirm the draft restores. |
 | DG-012 | P1 | Email composer | Open (testing) | End-to-end Email box behavior is not yet fully verified in a live org. | Canonical Email key (0.3.2), rich-text restore (0.3.2), and deferred-restore (0.3.3) all land but Email has not had a full manual pass. | Verify: type a formatted, multi-line Email draft, refresh, confirm restore (formatting + breaks), confirm Send clears the draft, and confirm Send submits the restored body (not stale/empty). Capture `[SFDG]` logs if anything fails. |
+| DG-013 | P0 | Draft cleanup/isolation | Resolved in 0.6.0 (2026-08-13) | Sent/saved Email, Post, and Note drafts could be recreated by late editor activity; Lightning DOM reuse could also restore a ticket 0001 draft on ticket 0004. | Fixed with Chrome-tab + nearest-record + composer + field identity, authoritative cross-frame clear tombstones, per-scope restore guards, Aura request-body action detection, and a one-time draft-schema purge. Mounted Salesforce console workspace tabs and Email iframes resolve their owning record locally. Settings are preserved. Covered by automated regression tests. | Re-enable only after manually verifying Send/Share/Save cleanup and isolation across Cases, Chrome tabs, and Salesforce workspace tabs in the target org. |
+| DG-014 | P1 | Long-ticket scrolling | Resolved in 0.6.0 (2026-08-13) | Long tickets with extensive Email/Note/Chatter history could render a blank/overscrolled page region. | Email restore was mutating the top Salesforce document's scroll position. It now resets only an isolated CKEditor iframe; covered by a top-page scroll isolation test. | Re-verify on a long ticket while scrolling before and after opening Email/Post/Note composers. |
 
 ### DG-003 toast display options
 

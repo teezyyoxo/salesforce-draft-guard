@@ -263,6 +263,272 @@ test("action type and scope derive structurally and stay stable when text conten
   `);
 });
 
+test("Post ownership prefers the Salesforce publisher over an inner Quill container", () => {
+  loadContentScript(`
+    const publisher = {
+      nodeType: 1,
+      matches: (selector) => selector === ".publisherInputContainer",
+      querySelector: () => null,
+      getAttribute: () => ""
+    };
+    const quill = { nodeType: 1 };
+    const editor = {
+      closest: (selector) => selector.includes("publisherInputContainer") ? publisher : quill
+    };
+
+    assert.equal(getContainer(editor), publisher);
+    assert.equal(getContainerActionType(getContainer(editor)), "post");
+  `);
+});
+
+test("headings and authored draft text cannot change a composer scope", () => {
+  loadContentScript(`
+    let heading = "New Note";
+    const headingNode = { textContent: heading };
+    const container = {
+      nodeType: 1,
+      tagName: "DIV",
+      textContent: "Draft mentioning email and post",
+      getAttribute: () => "",
+      matches: () => false,
+      querySelector: (selector) => selector.includes("h1") ? headingNode : null,
+      querySelectorAll: () => [],
+      closest: () => null
+    };
+
+    const first = getContainerScope(container);
+    headingNode.textContent = "Edited Note";
+    container.textContent = "Completely different authored text";
+    const second = getContainerScope(container);
+
+    assert.equal(getContainerActionType(container), "note");
+    assert.equal(first, second);
+  `);
+});
+
+test("submit actions tolerate Salesforce supplementary button text", () => {
+  loadContentScript(`
+    const button = (text, ariaLabel = "") => ({
+      textContent: text,
+      getAttribute: (name) => (name === "aria-label" ? ariaLabel : "")
+    });
+
+    assert.equal(getSubmitActionLabel(button("Send Email")), "send");
+    assert.equal(getSubmitActionLabel(button("", "Save Note")), "save");
+    assert.equal(getSubmitActionLabel(button("Cancel")), "");
+  `);
+});
+
+test("a reused Lightning composer gets a new scope after record navigation", () => {
+  loadContentScript(`
+    const container = {
+      nodeType: 1,
+      tagName: "DIV",
+      dataset: { sfdgScope: "stale-ticket-scope" },
+      textContent: "",
+      getAttribute: () => "",
+      matches: (selector) => selector === ".publisherInputContainer",
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      closest: () => null
+    };
+
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/500ABCDEF123456/view";
+    const first = getContainerScope(container);
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/500ZZZZZZ987654/view";
+    const second = getContainerScope(container);
+
+    assert.notEqual(first, "stale-ticket-scope");
+    assert.notEqual(first, second);
+  `);
+});
+
+test("the same Case and composer are isolated between Chrome tabs", () => {
+  loadContentScript(`
+    const container = {
+      nodeType: 1,
+      tagName: "DIV",
+      textContent: "",
+      getAttribute: () => "",
+      matches: (selector) => selector === ".publisherInputContainer",
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      closest: () => null
+    };
+
+    tabContextKey = "tab-42";
+    const firstTabScope = getContainerScope(container);
+    tabContextKey = "tab-43";
+    const secondTabScope = getContainerScope(container);
+
+    assert.notEqual(firstTabScope, secondTabScope);
+  `);
+});
+
+test("Post and Email scope share the same tab and current record identity", () => {
+  loadContentScript(`
+    tabContextKey = "tab-42";
+    const recordId = getRecordIdForScope(document.body);
+    const emailScope = getEmailDraftScope(document.body);
+
+    assert.equal(emailScope, hashKey("tab-42::" + recordId + "::email"));
+  `);
+});
+
+test("record lookup ignores generic Lightning data-id attributes", () => {
+  loadContentScript(`
+    const root = {
+      nodeType: 1,
+      querySelectorAll: (selector) => {
+        assert.equal(selector, "[data-recordid], [data-record-id], [record-id]");
+        return [{
+          getAttribute: (name) => name === "data-recordid" ? "500REALCASE1234" : ""
+        }];
+      }
+    };
+    location.pathname = "/lightning/page/home";
+    window.top.location.href = "https://example.lightning.force.com/lightning/page/home";
+
+    assert.equal(findRecordId(root), "500REALCASE1234");
+  `);
+});
+
+test("record lookup does not treat unrelated URL identifiers as Case context", () => {
+  loadContentScript(`
+    location.pathname = "/lightning/setup/00DORGIDENT12345/home";
+    window.top.location.href = "https://example.lightning.force.com/lightning/setup/00DORGIDENT12345/home";
+    const root = { nodeType: 1, querySelectorAll: () => [] };
+
+    assert.equal(findRecordId(root), "");
+  `);
+});
+
+test("mounted Salesforce workspace tabs use their local Case instead of the active URL", () => {
+  loadContentScript(`
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/500ACTIVE000002/view";
+    const recordNode = (recordId) => ({
+      getAttribute: (name) => name === "data-recordid" ? recordId : ""
+    });
+    const container = (recordId) => ({
+      nodeType: 1,
+      tagName: "DIV",
+      textContent: "",
+      getAttribute: () => "",
+      matches: (selector) => selector === ".publisherInputContainer",
+      closest: (selector) => selector.includes("data-recordid") ? recordNode(recordId) : null,
+      querySelector: () => null,
+      querySelectorAll: () => []
+    });
+
+    const case0001 = container("500MOUNTED00001");
+    const case0002 = container("500ACTIVE000002");
+
+    assert.equal(getRecordIdForScope(case0001), "500MOUNTED00001");
+    assert.notEqual(getContainerScope(case0001), getContainerScope(case0002));
+  `);
+});
+
+test("Email iframe scope follows its owning Salesforce workspace Case", () => {
+  loadContentScript(`
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/500ACTIVE000002/view";
+    const owningFrame = {
+      nodeType: 1,
+      tagName: "IFRAME",
+      closest: () => ({
+        getAttribute: (name) => name === "data-recordid" ? "500MOUNTED00001" : ""
+      }),
+      querySelectorAll: () => []
+    };
+    const emailBody = {
+      ownerDocument: { defaultView: { frameElement: owningFrame } }
+    };
+    tabContextKey = "tab-42";
+
+    assert.equal(
+      getEmailDraftScope(emailBody),
+      hashKey("tab-42::500MOUNTED00001::email")
+    );
+  `);
+});
+
+test("a reused editor can restore a different ticket key exactly once", async () => {
+  await loadContentScript(`
+    (async () => {
+      const editor = { nodeType: 1, tagName: "DIV", getAttribute: () => "" };
+      const writes = [];
+      let currentKey = "ticket-0001-key";
+
+      getDraftMetadata = () => ({ storageKey: currentKey, actionType: "post" });
+      getDraftValue = async (key) => ({ [key]: { value: key } });
+      readElementValue = () => "";
+      isElementRenderable = () => true;
+      isEmailEditorElement = () => false;
+      writeElementValueGuarded = (_element, draft) => writes.push(draft.value);
+      trackDraftEditor = () => {};
+      showToast = () => {};
+
+      await restoreDraft(editor);
+      await restoreDraft(editor);
+      currentKey = "ticket-0004-key";
+      await restoreDraft(editor);
+      await restoreDraft(editor);
+
+      assert.deepEqual(writes, ["ticket-0001-key", "ticket-0004-key"]);
+    })()
+  `);
+});
+
+test("a delayed autosave retains the ticket key captured while typing", () => {
+  loadContentScript(`
+    const editor = {
+      nodeType: 1,
+      tagName: "INPUT",
+      value: "Ticket 0001 draft",
+      getAttribute: () => ""
+    };
+    let activeKey = "ticket-0001-key";
+    getDraftMetadata = () => ({ storageKey: activeKey, actionType: "post" });
+    captureDraftSnapshot = () => ({
+      value: editor.value,
+      html: undefined,
+      url: "ticket-0001-url",
+      title: "Ticket 0001"
+    });
+
+    scheduleSave(editor, "input", true);
+    activeKey = "ticket-0004-key";
+
+    const scheduled = saveTimers.get(editor);
+    assert.equal(scheduled.meta.storageKey, "ticket-0001-key");
+    assert.equal(scheduled.snapshot.value, "Ticket 0001 draft");
+    assert.equal(scheduled.snapshot.url, "ticket-0001-url");
+  `);
+});
+
+test("a DOM scan cannot hide an editor ownership change from a late mutation", () => {
+  loadContentScript(`
+    const editor = {
+      nodeType: 1,
+      tagName: "INPUT",
+      value: "Ticket 0001 draft",
+      getAttribute: () => ""
+    };
+    let currentMeta = { storageKey: "ticket-0001-key", actionType: "post" };
+    getDraftMetadata = () => currentMeta;
+    captureDraftSnapshot = () => ({ value: editor.value, url: "ticket-0001", title: "0001" });
+    showToast = () => {};
+
+    scheduleSave(editor, "input", true);
+    currentMeta = { storageKey: "ticket-0002-key", actionType: "post" };
+    // Simulate scanAndRestore discovering the reused node before its old mutation arrives.
+    trackedEditors.set(editor, currentMeta);
+    scheduleSave(editor, "mutation", false);
+
+    assert.equal(saveTimers.has(editor), false);
+    assert.equal(editorDraftOwnership.get(editor), "ticket-0001-key");
+  `);
+});
+
 test("field key uses intrinsic identity and is frozen against volatile text", () => {
   loadContentScript(`
     function makeField() {
@@ -345,6 +611,8 @@ test("generic draft detection ignores neighboring Case field labels", () => {
 
 test("restore guard prevents a programmatic restore from scheduling a save", () => {
   loadContentScript(`
+    getDraftMetadata = () => ({ storageKey: "draft-key", actionType: "activity" });
+    captureDraftSnapshot = () => ({ value: "Draft text", url: "test", title: "test" });
     const guarded = { nodeType: 1, tagName: "DIV" };
     restoringNow.add(guarded);
     scheduleSave(guarded);
@@ -377,7 +645,7 @@ test("empty input clears immediately while pre-input events leave a draft alone"
     scheduleSave(empty, "beforeinput");
     assert.equal(clears, 0);
 
-    scheduleSave(empty, "input");
+    scheduleSave(empty, "input", true);
     assert.equal(clears, 1);
     assert.equal(saveTimers.has(empty), false);
   `);
@@ -408,6 +676,33 @@ test("a draft clear received from another frame cancels its pending autosave", (
     handleStorageChange({ [key]: { oldValue: { value: "sent" }, newValue: undefined } }, "session");
     assert.equal(saveTimers.has(editor), false);
     assert.equal(clearedDraftKeys.has(key), true);
+  `);
+});
+
+test("a cleared cross-frame editor cannot recreate sent text with a late mutation", () => {
+  loadContentScript(`
+    const key = "sfdg:draft:sent-email";
+    const editor = {
+      nodeType: 1,
+      tagName: "INPUT",
+      value: "Already sent text",
+      getAttribute: () => ""
+    };
+    trackedEditors.set(editor, { storageKey: key });
+    getDraftMetadata = () => ({ storageKey: key, actionType: "email" });
+    captureDraftSnapshot = () => ({ value: editor.value, url: "test", title: "test" });
+    clearedDraftKeys.add(key);
+
+    scheduleSave(editor, "mutation", false);
+    assert.equal(saveTimers.has(editor), false);
+    assert.equal(clearedDraftKeys.has(key), true);
+
+    editor.value = "";
+    scheduleSave(editor, "mutation", false);
+    editor.value = "A genuinely new draft";
+    scheduleSave(editor, "input", true);
+    assert.equal(clearedDraftKeys.has(key), false);
+    assert.equal(saveTimers.has(editor), true);
   `);
 });
 
@@ -681,6 +976,32 @@ test("Email viewport reset skips a detached editor range", () => {
     assert.equal(addRangeCalls, 0);
     assert.equal(element.scrollTop, 0);
     assert.equal(element.scrollLeft, 0);
+  `);
+});
+
+test("Email viewport reset never writes to the top Salesforce page scroller", () => {
+  loadContentScript(`
+    const pageScroller = { scrollTop: 900, scrollLeft: 20 };
+    document.scrollingElement = pageScroller;
+    document.documentElement = pageScroller;
+    document.body.scrollTop = 800;
+    document.body.scrollLeft = 10;
+    document.contains = () => true;
+    document.getSelection = () => null;
+    const element = {
+      nodeType: 1,
+      ownerDocument: document,
+      scrollTop: 60,
+      scrollLeft: 30
+    };
+
+    resetEmailEditorViewport(element);
+    assert.equal(element.scrollTop, 0);
+    assert.equal(element.scrollLeft, 0);
+    assert.equal(pageScroller.scrollTop, 900);
+    assert.equal(pageScroller.scrollLeft, 20);
+    assert.equal(document.body.scrollTop, 800);
+    assert.equal(document.body.scrollLeft, 10);
   `);
 });
 

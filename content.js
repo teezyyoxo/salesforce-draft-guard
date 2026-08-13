@@ -11,6 +11,8 @@ const KNOWN_DRAFT_SURFACE_SELECTOR = ".publisherInputContainer, .publisherInputC
 const DEBUG_ENABLED = false;
 const DEBUG_PREFIX = "[SFDG]";
 const EXTENSION_CONTEXT_INVALIDATED_TEXT = "extension context invalidated";
+const TAB_CONTEXT_MESSAGE_TYPE = "sfdg:get-tab-context";
+const FALLBACK_TAB_CONTEXT_STORAGE_KEY = "sfdg:tab-context";
 const DEFAULT_SETTINGS = {
   protectedActions: ["send", "share", "save", "post", "log a call"],
   fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
@@ -32,13 +34,15 @@ const RESTORE_GUARD_RELEASE_MS = 150;
 const draftCache = new Map();
 const pendingActions = [];
 const trackedEditors = new Map();
+const editorDraftOwnership = new WeakMap();
 const saveTimers = new WeakMap();
 const submittedEditors = new WeakSet();
 const toastStateByElement = new WeakMap();
 const observedEditors = new WeakSet();
 const observedFrames = new WeakSet();
 const restoringNow = new WeakSet();
-const restoredEditors = new WeakSet();
+const restoredDraftKeys = new WeakMap();
+const clearedEditorReadyKeys = new WeakMap();
 const toastedFieldKeys = new Set();
 const clearedDraftKeys = new Set();
 const draftGenerations = new Map();
@@ -51,6 +55,7 @@ let observerStarted = false;
 let toastNode;
 let settings = { ...DEFAULT_SETTINGS };
 let storageUnavailableDueToContext = false;
+let tabContextKey = "";
 
 function debugLog(...args) {
   if (!DEBUG_ENABLED) {
@@ -282,7 +287,7 @@ function collectDraftEditors(root) {
 bootstrap();
 
 async function bootstrap() {
-  settings = await loadSettings();
+  [settings, tabContextKey] = await Promise.all([loadSettings(), loadTabContextKey()]);
   debugLog("bootstrap", { href: location.href, settings });
   injectNetworkHook();
   bindGlobalListeners();
@@ -294,6 +299,49 @@ async function bootstrap() {
       scanAndRestore(document);
     });
   }
+}
+
+async function loadTabContextKey() {
+  if (chrome.runtime && typeof chrome.runtime.sendMessage === "function") {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: TAB_CONTEXT_MESSAGE_TYPE });
+      if (response && response.tabContext) {
+        return String(response.tabContext);
+      }
+    } catch (error) {
+      debugWarn("could not obtain Chrome tab identity", error);
+    }
+  }
+
+  // Runtime messaging is expected in Chrome. Keep a top-level sessionStorage fallback so
+  // temporary service-worker unavailability never collapses every tab onto a shared key.
+  try {
+    const pageWindow = getPageWindow();
+    const storage = pageWindow.sessionStorage;
+    let fallback = storage && storage.getItem(FALLBACK_TAB_CONTEXT_STORAGE_KEY);
+    if (!fallback) {
+      fallback = `fallback-${createRandomContextId()}`;
+      if (storage) {
+        storage.setItem(FALLBACK_TAB_CONTEXT_STORAGE_KEY, fallback);
+      }
+    }
+    return fallback;
+  } catch (error) {
+    debugWarn("could not persist fallback tab identity", error);
+    return `fallback-${createRandomContextId()}`;
+  }
+}
+
+function createRandomContextId() {
+  const cryptoSource = (typeof crypto !== "undefined" && crypto) || (window && window.crypto);
+  if (cryptoSource && typeof cryptoSource.randomUUID === "function") {
+    return cryptoSource.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getDraftTabContextKey() {
+  return tabContextKey || "unresolved-tab";
 }
 
 function injectNetworkHook() {
@@ -342,12 +390,15 @@ function flushPendingDrafts() {
   // together before saving.
   const editors = new Set([...collectDraftEditors(document), ...trackedEditors.keys()]);
   editors.forEach((editor) => {
-    cancelScheduledSave(editor);
+    const scheduledSave = cancelScheduledSave(editor);
     if (!shouldPersistDraftOnPageExit(editor)) {
       return;
     }
 
-    persistDraft(editor).catch((error) => {
+    const persist = scheduledSave && scheduledSave.meta && scheduledSave.snapshot
+      ? persistDraft(editor, scheduledSave.meta, scheduledSave.snapshot)
+      : persistDraft(editor);
+    persist.catch((error) => {
       console.error("Salesforce Draft Guard failed to flush a draft before page exit.", error);
     });
   });
@@ -460,7 +511,7 @@ function handleClickEvent(event) {
     return;
   }
 
-  const actionLabel = normalizeWhitespace(button.textContent || "").toLowerCase();
+  const actionLabel = getSubmitActionLabel(button);
   if (!isSubmitAction(actionLabel)) {
     return;
   }
@@ -473,6 +524,7 @@ function handleClickEvent(event) {
 
   const pendingAction = {
     actionLabel,
+    actionType: getContainerActionType(container),
     draftKeys,
     editors: getDraftEditorsForContainer(container, actionLabel),
     startedAt: Date.now(),
@@ -517,13 +569,38 @@ function handleWindowMessage(event) {
     });
 }
 
-function scheduleSave(element, eventType = "", eventIsTrusted = true) {
+function scheduleSave(element, eventType = "", eventIsTrusted = false) {
   // While we are programmatically restoring a draft, the write (and the editor's own
   // re-normalization of it) must not be treated as fresh user input, or it would re-save
   // the restored value and compound line breaks. Both the input listeners and the editor
   // MutationObserver funnel through here, so this single guard covers all save triggers.
   if (restoringNow.has(element)) {
     return;
+  }
+
+  const clearedMeta = clearedDraftKeys.size
+    ? trackedEditors.get(element) || getDraftMetadata(element)
+    : null;
+  if (clearedMeta && clearedDraftKeys.has(clearedMeta.storageKey)) {
+    // A successful save/send clear is a tombstone, not merely a cancelled timer. Salesforce
+    // and CKEditor can emit late mutations from the submitted editor in another frame. Ignore
+    // those until that editor has first reset to empty and then receives a real user edit for
+    // the next draft.
+    if (!hasUserValue(element)) {
+      cancelScheduledSave(element);
+      clearedEditorReadyKeys.set(element, clearedMeta.storageKey);
+      return;
+    }
+
+    const isNewUserEdit = Boolean(eventIsTrusted) && ["input", "change", "paste"].includes(eventType);
+    if (isNewUserEdit && clearedEditorReadyKeys.get(element) === clearedMeta.storageKey) {
+      clearedDraftKeys.delete(clearedMeta.storageKey);
+      clearedEditorReadyKeys.delete(element);
+      submittedEditors.delete(element);
+    } else {
+      cancelScheduledSave(element);
+      return;
+    }
   }
 
   // Salesforce can leave the submitted text in an editor briefly while it completes the
@@ -554,6 +631,33 @@ function scheduleSave(element, eventType = "", eventIsTrusted = true) {
     return;
   }
 
+  const currentMeta = getDraftMetadata(element);
+  if (!currentMeta) {
+    return;
+  }
+
+  const previouslyTrackedMeta = trackedEditors.get(element);
+  const ownedStorageKey = editorDraftOwnership.get(element);
+  if (
+    ((ownedStorageKey && ownedStorageKey !== currentMeta.storageKey) ||
+      (previouslyTrackedMeta && previouslyTrackedMeta.storageKey !== currentMeta.storageKey)) &&
+    !eventIsTrusted
+  ) {
+    // A route transition can reuse an editor while its old DOM content is still mounted.
+    // Never assign that content to the new ticket without a genuine user edit.
+    const previousSave = cancelScheduledSave(element);
+    if (previousSave && previousSave.meta && previousSave.snapshot) {
+      persistDraft(element, previousSave.meta, previousSave.snapshot).catch((error) => {
+        console.error("Salesforce Draft Guard failed to persist a draft before record navigation.", error);
+      });
+    }
+    return;
+  }
+  trackDraftEditor(element, currentMeta);
+  editorDraftOwnership.set(element, currentMeta.storageKey);
+
+  const snapshot = captureDraftSnapshot(element);
+
   const toastState = getToastState(element);
   if (toastState.resetTimer) {
     window.clearTimeout(toastState.resetTimer);
@@ -566,18 +670,36 @@ function scheduleSave(element, eventType = "", eventIsTrusted = true) {
   // Start the delay on the first typing event rather than restarting it after every
   // keystroke. This makes the first save/toast happen shortly after typing begins while
   // still allowing another save cycle after the prior one completes.
-  if (saveTimers.has(element)) {
-    return;
+  const scheduledSave = saveTimers.get(element);
+  if (scheduledSave) {
+    if (scheduledSave.meta && scheduledSave.meta.storageKey === currentMeta.storageKey) {
+      scheduledSave.snapshot = snapshot;
+      return;
+    }
+    cancelScheduledSave(element);
+    if (scheduledSave.meta && scheduledSave.snapshot) {
+      persistDraft(element, scheduledSave.meta, scheduledSave.snapshot).catch((error) => {
+        console.error("Salesforce Draft Guard failed to persist a draft before record navigation.", error);
+      });
+    }
+    if (!eventIsTrusted) {
+      return;
+    }
   }
 
-  const timerId = window.setTimeout(() => {
+  const nextScheduledSave = {
+    timerId: null,
+    meta: currentMeta,
+    snapshot
+  };
+  nextScheduledSave.timerId = window.setTimeout(() => {
     saveTimers.delete(element);
-    persistDraft(element).catch((error) => {
+    persistDraft(element, nextScheduledSave.meta, nextScheduledSave.snapshot).catch((error) => {
       console.error("Salesforce Draft Guard failed to persist a draft.", error);
     });
   }, SAVE_DELAY_MS);
 
-  saveTimers.set(element, timerId);
+  saveTimers.set(element, nextScheduledSave);
 }
 
 function shouldClearDraftForEmptyEvent(eventType, eventIsTrusted) {
@@ -585,11 +707,12 @@ function shouldClearDraftForEmptyEvent(eventType, eventIsTrusted) {
 }
 
 function cancelScheduledSave(element) {
-  const timerId = saveTimers.get(element);
-  if (timerId) {
-    window.clearTimeout(timerId);
+  const scheduledSave = saveTimers.get(element);
+  if (scheduledSave) {
+    window.clearTimeout(scheduledSave.timerId || scheduledSave);
   }
   saveTimers.delete(element);
+  return scheduledSave;
 }
 
 function clearDraftForEmptyElement(element) {
@@ -599,18 +722,29 @@ function clearDraftForEmptyElement(element) {
   }
 
   trackDraftEditor(element, meta);
+  editorDraftOwnership.set(element, meta.storageKey);
   clearDraftKeys([meta.storageKey]).catch((error) => {
     console.error("Salesforce Draft Guard failed to clear an empty draft.", error);
   });
 }
 
-async function persistDraft(element) {
+function captureDraftSnapshot(element) {
   const value = readElementValue(element);
   const rawHtml = readElementHtml(element);
-  const html = isEmailEditorElement(element) && rawHtml
-    ? normalizeEmailDraftHtml(rawHtml, element.ownerDocument || document)
-    : rawHtml;
-  const meta = getDraftMetadata(element);
+  return {
+    value,
+    html: isEmailEditorElement(element) && rawHtml
+      ? normalizeEmailDraftHtml(rawHtml, element.ownerDocument || document)
+      : rawHtml,
+    url: getPageLocationHref(),
+    title: getPageTitle()
+  };
+}
+
+async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = null) {
+  const snapshot = scheduledSnapshot || captureDraftSnapshot(element);
+  const { value, html } = snapshot;
+  const meta = scheduledMeta || getDraftMetadata(element);
   if (isEmailEditorElement(element)) {
     debugLog("persistDraft called for email element", {
       valueLength: value.length,
@@ -618,6 +752,12 @@ async function persistDraft(element) {
     });
   }
   if (!meta) {
+    return;
+  }
+
+  // The timer may already have fired when another frame clears this key. Re-check the
+  // authoritative tombstone here so a late persist cannot recreate a submitted draft.
+  if (clearedDraftKeys.has(meta.storageKey)) {
     return;
   }
 
@@ -630,8 +770,8 @@ async function persistDraft(element) {
     value,
     html,
     updatedAt: Date.now(),
-    url: getPageLocationHref(),
-    title: getPageTitle(),
+    url: snapshot.url,
+    title: snapshot.title,
     scope: meta.scope,
     fieldKey: meta.fieldKey,
     actionType: meta.actionType,
@@ -639,7 +779,11 @@ async function persistDraft(element) {
   };
 
   draftCache.set(meta.storageKey, draft);
-  trackDraftEditor(element, meta);
+  const liveMeta = getDraftMetadata(element);
+  if (liveMeta && liveMeta.storageKey === meta.storageKey) {
+    trackDraftEditor(element, meta);
+    editorDraftOwnership.set(element, meta.storageKey);
+  }
   const mutationGeneration = getDraftGeneration(meta.storageKey);
   await queueDraftStorageOperation(meta.storageKey, () => setDraftValue(meta.storageKey, draft));
   if (getDraftGeneration(meta.storageKey) === mutationGeneration) {
@@ -721,14 +865,9 @@ function scanAndRestore(root) {
 }
 
 async function restoreDraft(element) {
-  // Each editor element gets at most one restore attempt in its lifetime. Salesforce
-  // re-renders produce brand-new elements (which are not in this set, so they restore),
-  // while a persisting element being edited is never re-injected — that is what lets the
-  // user delete/backspace freely instead of having the draft snap back.
-  if (restoredEditors.has(element)) {
-    return;
-  }
-
+  // Each editor element gets at most one restore per tab-and-record-scoped draft key. This
+  // prevents repeated injection while editing but still permits a DOM node reused by Lightning
+  // on a different record to restore only that tab and record's own draft.
   const meta = getDraftMetadata(element);
   if (!meta) {
     if (isEmailEditorElement(element)) {
@@ -739,10 +878,19 @@ async function restoreDraft(element) {
     return;
   }
 
+  // Lightning often reuses the same composer DOM node while navigating between records.
+  // Restore at most once per element *and storage key*, not once for the element's lifetime.
+  if (restoredDraftKeys.get(element) === meta.storageKey) {
+    return;
+  }
+
   // A clear is authoritative even while Chrome storage finishes removing the old value.
   // Without this tombstone, a freshly rerendered empty composer could read and restore that
   // soon-to-be-removed value in the small gap after the user cleared or submitted it.
   if (clearedDraftKeys.has(meta.storageKey)) {
+    if (!hasUserValue(element)) {
+      clearedEditorReadyKeys.set(element, meta.storageKey);
+    }
     return;
   }
 
@@ -772,7 +920,7 @@ async function restoreDraft(element) {
   if (!shouldRestoreOverCurrentValue(currentValue)) {
     // The field already has content; never overwrite it. Mark handled so we don't keep
     // re-checking and never fight the user's edits.
-    restoredEditors.add(element);
+    restoredDraftKeys.set(element, meta.storageKey);
     if (isEmailEditorElement(element)) {
       debugLog("email restore skipped", {
         reason: "field-not-empty",
@@ -795,10 +943,11 @@ async function restoreDraft(element) {
 
   // Mark handled now so we never re-restore over the user's subsequent edits, even if they
   // later clear the field entirely.
-  restoredEditors.add(element);
+  restoredDraftKeys.set(element, meta.storageKey);
 
   writeElementValueGuarded(element, draft);
   trackDraftEditor(element, meta);
+  editorDraftOwnership.set(element, meta.storageKey);
   if (isEmailEditorElement(element)) {
     debugLog("email draft restored", {
       key: meta.storageKey,
@@ -835,6 +984,7 @@ function markDraftKeysCleared(storageKeys) {
       continue;
     }
     cancelScheduledSave(element);
+    clearedEditorReadyKeys.delete(element);
     const toastState = toastStateByElement.get(element);
     if (toastState) {
       toastState.toastShown = false;
@@ -918,10 +1068,13 @@ function networkResultMatchesPendingAction(detail, pendingAction) {
   }
 
   const url = String(detail.url || "").toLowerCase();
+  const signals = Array.isArray(detail.signals) ? detail.signals : [];
   const actionLabel = normalizeWhitespace(pendingAction.actionLabel || "").toLowerCase();
+  const actionType = normalizeWhitespace(pendingAction.actionType || "").toLowerCase();
 
   if (actionLabel === "send") {
     return (
+      signals.includes("email-send") ||
       url.includes("/emailmessages") ||
       url.includes("/email/simple") ||
       url.includes("emailquickaction.logsuccessfulsending")
@@ -929,11 +1082,17 @@ function networkResultMatchesPendingAction(detail, pendingAction) {
   }
 
   if (actionLabel === "post" || actionLabel === "share") {
-    return url.includes("/chatter/feed-elements") || url.includes("forcechatter-chatter.feeditemaction.create");
+    return (
+      signals.includes("post-submit") ||
+      url.includes("/chatter/feed-elements") ||
+      url.includes("forcechatter-chatter.feeditemaction.create")
+    );
   }
 
   if (actionLabel === "log a call" || actionLabel === "save") {
-    return ["/tasks", "/events", "/notes"].some((fragment) => url.includes(fragment));
+    const explicitActivityEndpoint = ["/tasks", "/events", "/notes"].some((fragment) => url.includes(fragment));
+    const matchingAuraSave = signals.includes("activity-save") && ["log-a-call", "note"].includes(actionType);
+    return explicitActivityEndpoint || matchingAuraSave;
   }
 
   return false;
@@ -980,15 +1139,20 @@ function getDraftMetadata(element) {
 }
 
 function getEmailDraftScope(container) {
-  // Email drafts are stored using the top-level record context, not the iframe-local
-  // document context. This keeps the Email body draft key stable across the separate
-  // CKEditor iframe and the outer page that owns the Send action.
-  return hashKey(`${getRecordIdForScope(getPageDocument().body)}::email`);
+  // Resolve the record from the CKEditor iframe's owning record wrapper when possible. This
+  // keeps Email aligned with its outer Send action even when several Salesforce console
+  // workspace tabs remain mounted and the browser URL represents only the active one.
+  return hashKey(`${getDraftTabContextKey()}::${getRecordIdForScope(container)}::email`);
 }
 
 function getContainer(element) {
+  const postContainer = element.closest(".publisherInputContainer, .forceChatterPublisher");
+  if (postContainer) {
+    return postContainer;
+  }
+
   const structural = element.closest(
-    "[role='dialog'], article, section, form, .forceChatterPublisher, .oneRecordActionWrapper, .slds-modal, .ql-container, .publisherInputContainer, .cke_contents, .cke_inner"
+    "[role='dialog'], article, section, form, .oneRecordActionWrapper, .slds-modal, .ql-container, .cke_contents, .cke_inner"
   );
   if (structural) {
     return structural;
@@ -1005,29 +1169,23 @@ function getContainer(element) {
 }
 
 function getRecordIdForScope(container) {
-  // The record id comes from the URL first (stable across reloads) and only falls back to a
-  // DOM lookup or the stable page context. It never uses per-load DOM identifiers.
+  // Salesforce console workspace tabs can keep several records mounted simultaneously while
+  // the URL represents only the active workspace tab. Prefer the composer's nearest explicit
+  // record wrapper (or its iframe owner), then use the top URL and page DOM as fallbacks.
   const pageDocument = getPageDocument();
-  return findRecordId(container) || findRecordId(pageDocument.body) || getStablePageContextKey();
+  const recordContext = getRecordContextElement(container);
+  return (
+    findRecordIdInDom(recordContext) ||
+    findRecordIdInPageUrl() ||
+    findRecordIdInDom(pageDocument.body) ||
+    getStablePageContextKey()
+  );
 }
 
 function getContainerScope(container) {
-  if (container.dataset && container.dataset.sfdgScope) {
-    return container.dataset.sfdgScope;
-  }
-
   const recordId = getRecordIdForScope(container);
   const actionType = getContainerActionType(container);
-  const heading =
-    findText(container, "h1, h2, h3, [role='heading'], .title, .slds-text-heading_small") ||
-    (container.getAttribute && container.getAttribute("aria-label")) ||
-    "";
-
-  const scope = hashKey(`${recordId}::${actionType}::${heading}`);
-  if (container.dataset) {
-    container.dataset.sfdgScope = scope;
-  }
-  return scope;
+  return hashKey(`${getDraftTabContextKey()}::${recordId}::${actionType}`);
 }
 
 function getFieldKey(element, container) {
@@ -1055,15 +1213,7 @@ function getFieldKey(element, container) {
 }
 
 function getContainerActionType(container) {
-  if (container.dataset && container.dataset.sfdgActionType) {
-    return container.dataset.sfdgActionType;
-  }
-
-  const actionType = resolveContainerActionType(container);
-  if (container.dataset) {
-    container.dataset.sfdgActionType = actionType;
-  }
-  return actionType;
+  return resolveContainerActionType(container);
 }
 
 function resolveContainerActionType(container) {
@@ -1083,18 +1233,25 @@ function resolveContainerActionType(container) {
     return "email";
   }
 
-  // Text-based classification is a last resort only.
-  const text = normalizeWhitespace(container.textContent || "").toLowerCase();
-  if (text.includes("log a call")) {
+  // Text-based classification is a last resort, but it must never read the entire container:
+  // that includes user-authored draft text and can change a draft's action type while typing.
+  const semanticText = normalizeWhitespace(
+    [
+      container.getAttribute && container.getAttribute("aria-label"),
+      findText(container, "h1, h2, h3, [role='heading'], .title, .slds-text-heading_small"),
+      findText(container, "button, [role='button']")
+    ].filter(Boolean).join(" ")
+  ).toLowerCase();
+  if (semanticText.includes("log a call")) {
     return "log-a-call";
   }
-  if (text.includes("email")) {
+  if (semanticText.includes("email")) {
     return "email";
   }
-  if (text.includes("post")) {
+  if (semanticText.includes("post") || semanticText.includes("share")) {
     return "post";
   }
-  if (text.includes("note")) {
+  if (semanticText.includes("note")) {
     return "note";
   }
 
@@ -1169,6 +1326,28 @@ function findRecordId(root) {
     return "";
   }
 
+  return findRecordIdInDom(root) || findRecordIdInPageUrl();
+}
+
+function getRecordContextElement(container) {
+  if (!container) {
+    return container;
+  }
+
+  try {
+    const ownerDocument = container.ownerDocument;
+    const ownerWindow = ownerDocument && ownerDocument.defaultView;
+    if (ownerWindow && ownerWindow.frameElement) {
+      return ownerWindow.frameElement;
+    }
+  } catch (error) {
+    debugWarn("could not inspect editor frame ownership", error);
+  }
+
+  return container;
+}
+
+function findRecordIdInPageUrl() {
   let pathname = location.pathname;
   try {
     pathname = new URL(getPageLocationHref()).pathname;
@@ -1176,22 +1355,50 @@ function findRecordId(root) {
     debugWarn("failed to parse page location for record id", error);
   }
 
-  const urlMatch = pathname.match(/\/([a-zA-Z0-9]{15,18})(?:\/|$)/);
-  if (urlMatch) {
-    return urlMatch[1];
-  }
+  const urlMatch = pathname.match(/\/lightning\/r\/[^/]+\/([a-zA-Z0-9]{15,18})(?:\/|$)/i);
+  return urlMatch ? urlMatch[1] : "";
+}
 
-  const recordNode = root.querySelector("[data-recordid], [data-record-id], [data-id]");
-  if (!recordNode) {
+function findRecordIdInDom(root) {
+  if (!(isElementNode(root) || isDocumentNode(root))) {
     return "";
   }
 
-  return normalizeWhitespace(
+  if (isElementNode(root) && typeof root.closest === "function") {
+    const ancestor = root.closest("[data-recordid], [data-record-id], [record-id]");
+    const ancestorId = readRecordIdAttribute(ancestor);
+    if (ancestorId) {
+      return ancestorId;
+    }
+  }
+
+  if (typeof root.querySelectorAll !== "function") {
+    return "";
+  }
+
+  const recordNodes = root.querySelectorAll("[data-recordid], [data-record-id], [record-id]");
+  for (const recordNode of recordNodes) {
+    const candidate = readRecordIdAttribute(recordNode);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function readRecordIdAttribute(recordNode) {
+  if (!recordNode || typeof recordNode.getAttribute !== "function") {
+    return "";
+  }
+
+  const candidate = normalizeWhitespace(
     recordNode.getAttribute("data-recordid") ||
       recordNode.getAttribute("data-record-id") ||
-      recordNode.getAttribute("data-id") ||
+      recordNode.getAttribute("record-id") ||
       ""
   );
+  return /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/.test(candidate) ? candidate : "";
 }
 
 function readElementValue(element) {
@@ -1284,6 +1491,7 @@ function restoreEditableDraft(element, draft) {
 
 function resetEmailEditorViewport(element) {
   const ownerDocument = element.ownerDocument || document;
+  const pageDocument = getPageDocument();
 
   // The synthetic paste leaves CKEditor’s selection at the end of the restored body. When
   // the user focuses the editor, the browser then scrolls that caret into view. Put the caret
@@ -1307,18 +1515,19 @@ function resetEmailEditorViewport(element) {
 
   element.scrollTop = 0;
   element.scrollLeft = 0;
-  const scrollingElement = ownerDocument.scrollingElement || ownerDocument.documentElement;
-  if (scrollingElement) {
-    scrollingElement.scrollTop = 0;
-    scrollingElement.scrollLeft = 0;
-  }
-  if (ownerDocument.body) {
-    ownerDocument.body.scrollTop = 0;
-    ownerDocument.body.scrollLeft = 0;
-  }
-  const ownerWindow = ownerDocument.defaultView || window;
-  if (ownerWindow && typeof ownerWindow.scrollTo === "function") {
-    ownerWindow.scrollTo(0, 0);
+  // Only reset the isolated CKEditor iframe viewport. Writing scrollTop/scrollTo on the
+  // top Salesforce document interferes with Lightning's virtualized long-record scroller and
+  // can leave the viewport beyond rendered content, producing a large blank page region.
+  if (ownerDocument !== pageDocument) {
+    const scrollingElement = ownerDocument.scrollingElement || ownerDocument.documentElement;
+    if (scrollingElement) {
+      scrollingElement.scrollTop = 0;
+      scrollingElement.scrollLeft = 0;
+    }
+    if (ownerDocument.body) {
+      ownerDocument.body.scrollTop = 0;
+      ownerDocument.body.scrollLeft = 0;
+    }
   }
 }
 
@@ -1749,6 +1958,37 @@ function findText(root, selector) {
 
 function isSubmitAction(actionLabel) {
   return settings.protectedActions.includes(actionLabel.toLowerCase());
+}
+
+function getSubmitActionLabel(button) {
+  if (!button) {
+    return "";
+  }
+
+  const candidates = [
+    button.textContent,
+    button.getAttribute && button.getAttribute("aria-label"),
+    button.getAttribute && button.getAttribute("title"),
+    button.getAttribute && button.getAttribute("value")
+  ];
+  const configuredActions = settings.protectedActions
+    .map((action) => normalizeWhitespace(action).toLowerCase())
+    .sort((a, b) => b.length - a.length);
+
+  for (const candidate of candidates) {
+    const normalized = normalizeWhitespace(candidate || "").toLowerCase();
+    if (!normalized) {
+      continue;
+    }
+    const match = configuredActions.find(
+      (action) => normalized === action || normalized.startsWith(`${action} `) || normalized.endsWith(` ${action}`)
+    );
+    if (match) {
+      return match;
+    }
+  }
+
+  return "";
 }
 
 function prunePendingActions() {

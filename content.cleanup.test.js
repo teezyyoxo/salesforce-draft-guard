@@ -146,6 +146,39 @@ test("a Post submission cannot target a simultaneous Email draft", () => {
   );
 });
 
+test("Aura action signals clear only their matching submitted composer", () => {
+  const { networkResultMatchesPendingAction } = loadDraftGuardFunctions();
+
+  assert.equal(
+    networkResultMatchesPendingAction(
+      { url: "/aura", signals: ["email-send"] },
+      { actionLabel: "send", actionType: "email" }
+    ),
+    true
+  );
+  assert.equal(
+    networkResultMatchesPendingAction(
+      { url: "/aura", signals: ["post-submit"] },
+      { actionLabel: "share", actionType: "post" }
+    ),
+    true
+  );
+  assert.equal(
+    networkResultMatchesPendingAction(
+      { url: "/aura", signals: ["activity-save"] },
+      { actionLabel: "save", actionType: "note" }
+    ),
+    true
+  );
+  assert.equal(
+    networkResultMatchesPendingAction(
+      { url: "/aura", signals: ["activity-save"] },
+      { actionLabel: "save", actionType: "activity" }
+    ),
+    false
+  );
+});
+
 test("email draft scope is derived from the top-level record id", () => {
   const context = loadDraftGuardFunctions();
   const emailBody = {
@@ -162,7 +195,7 @@ test("email draft scope is derived from the top-level record id", () => {
     querySelector: () => ({ getAttribute: () => "500000000000001" })
   };
 
-  const expectedScope = context.hashKey("500000000000001::email");
+  const expectedScope = context.hashKey("unresolved-tab::500000000000001::email");
   assert.equal(context.getEmailDraftScope(emailBody), expectedScope);
 });
 

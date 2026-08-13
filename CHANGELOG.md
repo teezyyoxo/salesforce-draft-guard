@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.6.0] - 2026-08-13
+
+Major regression repair release for the draft cleanup and isolation failures introduced in the
+0.5.0 release line.
+
+### Major regression fixes from 0.5.0
+- Fixed successfully sent Email and saved Post/Note content remaining in extension storage and
+  restoring when the composer was opened again. A successful clear is now an authoritative
+  cross-frame tombstone: late autosaves, CKEditor mutations, page-exit flushes, and rerenders
+  cannot recreate the submitted draft. The same editor becomes writable again only after
+  Salesforce resets it and the user begins a genuinely new draft.
+- Fixed drafts leaking between tickets when Salesforce Lightning reuses a composer DOM node
+  during client-side record navigation. Draft identity is now explicitly scoped by Chrome tab,
+  nearest mounted Salesforce record, structural composer type, and stable field identity.
+  Restore guards are keyed per scoped draft rather than lasting for a DOM element's lifetime.
+- Fixed mounted Salesforce console workspace tabs being able to borrow the active workspace
+  tab's URL identity. Post, Note, and Email iframe composers now prefer their nearest explicit
+  record wrapper, so hidden Case 0001 and active Case 0002 remain isolated inside one Chrome tab.
+- Removed generic Lightning `[data-id]` values, changing headings, and authored draft text from
+  draft ownership. Only validated Salesforce record attributes or an exact Lightning record URL
+  may identify a record; the Salesforce publisher wrapper is authoritative for Post drafts.
+- Fixed successful Salesforce Aura submissions being missed when the Email, Post, or Note action
+  descriptor is present in the request body instead of the URL. The network hook reports only
+  non-sensitive action signals and never exposes request bodies or draft content.
+- Fixed submit-button recognition when Salesforce includes accessible or supplementary text
+  around `Send`, `Share`, `Post`, `Save`, or `Log a Call`.
+- Added a one-time draft-schema migration that removes entries created by earlier unscoped builds
+  from session and local storage while preserving extension settings. The schema marker also
+  handles reloads of an earlier unpacked 0.6.0 build, not only manifest-version upgrades.
+- Fixed Email restore code writing to the top Salesforce page scroller. Only the isolated editor
+  iframe is reset now, preventing blank/overscrolled regions on long tickets with extensive
+  Email, Note, and Chatter history.
+
+### Added
+- Added regression coverage for cross-ticket composer reuse, Chrome-tab and Salesforce-workspace
+  isolation, per-scope restore guards, delayed autosave ownership, Post publisher selection,
+  Email iframe ownership, cross-frame late-save suppression, Aura body action detection,
+  draft-schema migration, and top-page scroll isolation.
+
+### Changed
+- Bumped the extension version to 0.6.0 and corrected the manifest version drift left by the
+  0.5.6 source release.
+
 ## [0.5.6] - 2026-08-07
 
 ### Fixed

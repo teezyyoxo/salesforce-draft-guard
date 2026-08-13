@@ -187,6 +187,57 @@ test("insertViaPaste focuses without scrolling when supported", () => {
   `);
 });
 
+test("background rich-text restore releases editor focus so later keys cannot snap the page back", () => {
+  loadContentScript(`
+    let blurred = 0;
+    let removedRanges = 0;
+    document.activeElement = document.body;
+    document.body.isConnected = true;
+    document.getSelection = () => ({
+      removeAllRanges: () => { removedRanges += 1; },
+      addRange: () => {}
+    });
+    const editor = {
+      blur: () => { blurred += 1; }
+    };
+
+    restoreFocusAfterDraftRestore(editor, document, document.activeElement);
+    assert.equal(blurred, 1);
+    assert.equal(removedRanges, 1);
+  `);
+});
+
+test("rich-text restore returns focus to the prior control without scrolling", () => {
+  loadContentScript(`
+    let focusArgument = null;
+    const previous = {
+      isConnected: true,
+      focus: (argument) => { focusArgument = argument; }
+    };
+    const editor = {
+      blur: () => { throw new Error("editor should not blur when prior focus is restorable"); }
+    };
+
+    restoreFocusAfterDraftRestore(editor, document, previous);
+    assert.deepEqual(focusArgument, { preventScroll: true });
+  `);
+});
+
+test("rich-text restore preserves the selection that existed before its synthetic paste", () => {
+  loadContentScript(`
+    const originalRange = { id: "original" };
+    const restoredRanges = [];
+    document.getSelection = () => ({
+      removeAllRanges: () => {},
+      addRange: (range) => { restoredRanges.push(range); }
+    });
+    const editor = { blur: () => {} };
+
+    restoreFocusAfterDraftRestore(editor, document, document.body, [originalRange]);
+    assert.deepEqual(restoredRanges, [originalRange]);
+  `);
+});
+
 test("editable value normalization removes editor-added trailing line breaks", () => {
   loadContentScript(`
     assert.equal(normalizeEditableValue("First line\\r\\nSecond line\\n\\n"), "First line\\nSecond line");
@@ -911,7 +962,7 @@ test("save confirmation frequency controls repeated save toasts", () => {
   `);
 });
 
-test("Email viewport reset moves caret and scroll position to the beginning", () => {
+test("rich-text viewport reset moves the caret and Email iframe scroll position to the beginning", () => {
   loadContentScript(`
     const range = {
       selectNodeContents: () => {},
@@ -935,7 +986,7 @@ test("Email viewport reset moves caret and scroll position to the beginning", ()
       scrollLeft: 50
     };
 
-    resetEmailEditorViewport(element);
+    resetRestoredEditorViewport(element);
     assert.equal(element.scrollTop, 0);
     assert.equal(element.scrollLeft, 0);
     assert.equal(scrollingElement.scrollTop, 0);
@@ -945,7 +996,7 @@ test("Email viewport reset moves caret and scroll position to the beginning", ()
   `);
 });
 
-test("Email viewport reset skips a detached editor range", () => {
+test("rich-text viewport reset skips a detached editor range", () => {
   loadContentScript(`
     let addRangeCalls = 0;
     const emailDocument = {
@@ -972,14 +1023,14 @@ test("Email viewport reset skips a detached editor range", () => {
       scrollLeft: 50
     };
 
-    resetEmailEditorViewport(element);
+    resetRestoredEditorViewport(element);
     assert.equal(addRangeCalls, 0);
     assert.equal(element.scrollTop, 0);
     assert.equal(element.scrollLeft, 0);
   `);
 });
 
-test("Email viewport reset never writes to the top Salesforce page scroller", () => {
+test("Post viewport reset clears only the editor and never writes to the Salesforce page scroller", () => {
   loadContentScript(`
     const pageScroller = { scrollTop: 900, scrollLeft: 20 };
     document.scrollingElement = pageScroller;
@@ -995,13 +1046,43 @@ test("Email viewport reset never writes to the top Salesforce page scroller", ()
       scrollLeft: 30
     };
 
-    resetEmailEditorViewport(element);
+    resetRestoredEditorViewport(element);
     assert.equal(element.scrollTop, 0);
     assert.equal(element.scrollLeft, 0);
     assert.equal(pageScroller.scrollTop, 900);
     assert.equal(pageScroller.scrollLeft, 20);
     assert.equal(document.body.scrollTop, 800);
     assert.equal(document.body.scrollLeft, 10);
+  `);
+});
+
+test("background Post viewport reset does not recreate a selection inside the editor", () => {
+  loadContentScript(`
+    let addRangeCalls = 0;
+    const pageScroller = { scrollTop: 900, scrollLeft: 20 };
+    document.scrollingElement = pageScroller;
+    document.documentElement = pageScroller;
+    document.activeElement = document.body;
+    document.contains = () => true;
+    document.getSelection = () => ({
+      removeAllRanges: () => {},
+      addRange: () => { addRangeCalls += 1; }
+    });
+    document.createRange = () => ({
+      selectNodeContents: () => {},
+      collapse: () => {}
+    });
+    const element = {
+      nodeType: 1,
+      ownerDocument: document,
+      scrollTop: 60,
+      scrollLeft: 30
+    };
+
+    resetRestoredEditorViewport(element);
+    assert.equal(addRangeCalls, 0);
+    assert.equal(element.scrollTop, 0);
+    assert.equal(pageScroller.scrollTop, 900);
   `);
 });
 

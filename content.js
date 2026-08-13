@@ -1456,8 +1456,26 @@ function releaseRestoreGuard(element) {
 
 function restoreEditableDraft(element, draft) {
   const ownerDocument = element.ownerDocument || document;
-  const pasteHandled = insertViaPaste(element, ownerDocument, draft);
-  dispatchSyntheticInput(element);
+  const previouslyFocusedElement = ownerDocument.activeElement || null;
+  const shouldRestoreFocus = previouslyFocusedElement !== element;
+  const previousSelectionRanges = shouldRestoreFocus
+    ? captureDocumentSelectionRanges(ownerDocument)
+    : [];
+  let pasteHandled = false;
+
+  try {
+    pasteHandled = insertViaPaste(element, ownerDocument, draft);
+    dispatchSyntheticInput(element);
+  } finally {
+    if (shouldRestoreFocus) {
+      restoreFocusAfterDraftRestore(
+        element,
+        ownerDocument,
+        previouslyFocusedElement,
+        previousSelectionRanges
+      );
+    }
+  }
 
   if (isEmailEditorElement(element)) {
     debugLog("email restore: paste dispatched", { pasteHandled, hasHtml: Boolean(draft && draft.html) });
@@ -1482,24 +1500,27 @@ function restoreEditableDraft(element, draft) {
     } catch (error) {
       debugWarn("restore verification failed", error);
     }
-    if (isEmailEditorElement(element)) {
-      resetEmailEditorViewport(element);
-    }
+    // Synthetic paste leaves rich-text editors with their caret and local viewport at the
+    // end of the restored draft. This affects both CKEditor Email bodies and Salesforce's
+    // Chatter/Post editor. On a long record, leaving the Post editor overscrolled can produce
+    // a large blank composer until a browser zoom/resize forces Chrome to recompute layout.
+    resetRestoredEditorViewport(element);
     restoringNow.delete(element);
   }, RESTORE_GUARD_RELEASE_MS);
 }
 
-function resetEmailEditorViewport(element) {
+function resetRestoredEditorViewport(element) {
   const ownerDocument = element.ownerDocument || document;
   const pageDocument = getPageDocument();
 
-  // The synthetic paste leaves CKEditor’s selection at the end of the restored body. When
-  // the user focuses the editor, the browser then scrolls that caret into view. Put the caret
-  // at the beginning and reset both the iframe body and document scroll positions.
+  // Put the caret at the beginning before resetting the editor-local scroll offsets. Quill's
+  // Post editor and CKEditor both otherwise keep the selection at the end of restored text,
+  // which can leave their editable surface displaying an empty overscrolled region.
   try {
     const isAttached = element.isConnected !== false &&
       (typeof ownerDocument.contains !== "function" || ownerDocument.contains(element));
-    if (isAttached) {
+    const editorHasFocus = !("activeElement" in ownerDocument) || ownerDocument.activeElement === element;
+    if (isAttached && editorHasFocus) {
       const selection = typeof ownerDocument.getSelection === "function" ? ownerDocument.getSelection() : null;
       if (selection && typeof ownerDocument.createRange === "function") {
         const range = ownerDocument.createRange();
@@ -1510,14 +1531,14 @@ function resetEmailEditorViewport(element) {
       }
     }
   } catch (error) {
-    debugWarn("could not reset Email caret position", error);
+    debugWarn("could not reset restored editor caret position", error);
   }
 
   element.scrollTop = 0;
   element.scrollLeft = 0;
-  // Only reset the isolated CKEditor iframe viewport. Writing scrollTop/scrollTo on the
-  // top Salesforce document interferes with Lightning's virtualized long-record scroller and
-  // can leave the viewport beyond rendered content, producing a large blank page region.
+  // An Email body has an isolated CKEditor iframe viewport, which is safe to reset. Never
+  // write to the top Salesforce document: doing that interferes with Lightning's virtualized
+  // long-record scroller and can leave the page beyond rendered content.
   if (ownerDocument !== pageDocument) {
     const scrollingElement = ownerDocument.scrollingElement || ownerDocument.documentElement;
     if (scrollingElement) {
@@ -1528,6 +1549,73 @@ function resetEmailEditorViewport(element) {
       ownerDocument.body.scrollTop = 0;
       ownerDocument.body.scrollLeft = 0;
     }
+  }
+}
+
+function captureDocumentSelectionRanges(ownerDocument) {
+  try {
+    const selection = typeof ownerDocument.getSelection === "function"
+      ? ownerDocument.getSelection()
+      : null;
+    if (!selection || typeof selection.getRangeAt !== "function") {
+      return [];
+    }
+
+    const ranges = [];
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      ranges.push(range && typeof range.cloneRange === "function" ? range.cloneRange() : range);
+    }
+    return ranges.filter(Boolean);
+  } catch (error) {
+    debugWarn("could not capture selection before draft recovery", error);
+    return [];
+  }
+}
+
+function restoreFocusAfterDraftRestore(
+  element,
+  ownerDocument,
+  previouslyFocusedElement,
+  previousSelectionRanges = []
+) {
+  const body = ownerDocument.body;
+  const documentElement = ownerDocument.documentElement;
+  const canRestorePreviousFocus =
+    previouslyFocusedElement &&
+    previouslyFocusedElement !== body &&
+    previouslyFocusedElement !== documentElement &&
+    previouslyFocusedElement.isConnected !== false &&
+    typeof previouslyFocusedElement.focus === "function";
+
+  let previousFocusRestored = false;
+  if (canRestorePreviousFocus) {
+    try {
+      previouslyFocusedElement.focus({ preventScroll: true });
+      previousFocusRestored = true;
+    } catch (error) {
+      debugWarn("could not restore focus after draft recovery", error);
+    }
+  }
+  if (!previousFocusRestored && typeof element.blur === "function") {
+    // A background restore commonly begins with BODY focused. Blur the editor after its
+    // synthetic paste/input events so later keyboard input cannot drag the page back to the
+    // recovered composer or make Lightning retain focus-expanded workspace geometry.
+    element.blur();
+  }
+
+  try {
+    const selection = typeof ownerDocument.getSelection === "function"
+      ? ownerDocument.getSelection()
+      : null;
+    if (selection && typeof selection.removeAllRanges === "function") {
+      selection.removeAllRanges();
+      if (typeof selection.addRange === "function") {
+        previousSelectionRanges.forEach((range) => selection.addRange(range));
+      }
+    }
+  } catch (error) {
+    debugWarn("could not restore selection after draft recovery", error);
   }
 }
 

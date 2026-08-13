@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.6.1] - 2026-08-13
+
+Regression hotfix for the incomplete long-ticket scrolling repair in 0.6.0.
+
+### Fixed
+- Fixed background Chatter/Post and Email recovery leaving the editor focused with a live
+  selection after its synthetic paste. Pressing any key after scrolling away could therefore
+  snap the page back to the composer and leave Lightning's workspace/background container at
+  an exponentially stale height until browser zoom forced a layout recalculation. Recovery
+  now restores the prior focus (or blurs the editor), avoids recreating a background selection,
+  and resets only editor-local viewports without mutating the Salesforce page scroller.
+
+### Changed
+- Bumped the extension version to 0.6.1.
+
 ## [0.6.0] - 2026-08-13
 
 Major regression repair release for the draft cleanup and isolation failures introduced in the

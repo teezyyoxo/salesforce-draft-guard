@@ -18,13 +18,15 @@
 
       <section class="toolbar">
         <button id="refresh" class="button button-secondary" type="button">Refresh</button>
-        <button id="clearAll" class="button" type="button">Clear All</button>
+        <button id="clearAll" class="button" type="button">Clear Drafts / Cache</button>
       </section>
 
       <p id="summary" class="summary"></p>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
       <section id="drafts" class="drafts" aria-live="polite"></section>
     </main>
 
+    <script src="draft-storage.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

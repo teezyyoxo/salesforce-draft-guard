@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.6.2] - 2026-08-14
+
+### Added
+- Added a prominent **Clear Drafts / Cache** action to both the extension popup and options
+  page, with a result message showing how many saved drafts were removed.
+
+### Fixed
+- Manual clearing now broadcasts an authoritative signal to every live Salesforce frame before
+  deleting session/local draft storage. This cancels pending autosaves and invalidates in-memory
+  draft copies so an open composer cannot immediately recreate the cleared cache.
+- A genuine edit after a manual clear can start a fresh autosave without requiring the composer
+  to be emptied or reopened first.
+- Draft-storage clearing preserves extension settings and reports storage failures instead of
+  silently presenting an unsuccessful clear as complete.
+
+### Changed
+- Bumped the extension version to 0.6.2.
+
 ## [0.6.1] - 2026-08-13
 
 Regression hotfix for the incomplete long-ticket scrolling repair in 0.6.0.

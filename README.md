@@ -46,6 +46,7 @@ git push -u origin codex/salesforce-draft-guard
 
 - Options page for choosing which Salesforce actions clear drafts, which field keywords should be protected, and how toast notifications appear.
 - Popup panel for reviewing saved drafts in the current browser session and clearing one or all drafts manually.
+- **Clear Drafts / Cache** controls in both the popup and options page cancel pending autosaves and remove all saved drafts without resetting preferences.
 
 ## Local verification
 
@@ -54,6 +55,7 @@ node --check content.js
 node --check injected.js
 node --check options.js
 node --check popup.js
+node --check draft-storage.js
 node --check background.js
 node --test
 ```

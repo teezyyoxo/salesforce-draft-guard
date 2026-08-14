@@ -4,10 +4,20 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 function loadDraftGuardFunctions() {
-  const source = readFileSync("content.js", "utf8").replace("\nbootstrap();\n", "\n");
+  const source = readFileSync("content.js", "utf8").replace("\nbootstrap();\n", "\n") + `
+    globalThis.__draftGuardState = {
+      clearedDraftKeys,
+      clearedEditorReadyKeys,
+      draftCache,
+      draftGenerations,
+      draftStorageQueues,
+      trackedEditors
+    };
+  `;
+  const storageWrites = [];
   const storageArea = {
     get: async () => ({}),
-    set: async () => {},
+    set: async (value) => storageWrites.push(value),
     remove: async () => {}
   };
   const context = {
@@ -34,6 +44,7 @@ function loadDraftGuardFunctions() {
   };
 
   context.window.top = context.window;
+  context.__storageWrites = storageWrites;
   vm.runInNewContext(source, context, { filename: "content.js" });
   return context;
 }
@@ -207,4 +218,65 @@ test("only a user edit may clear an empty draft", () => {
   assert.equal(shouldClearDraftForEmptyEvent("mutation", false), false);
   assert.equal(shouldClearDraftForEmptyEvent("input", false), false);
   assert.equal(shouldClearDraftForEmptyEvent("blur", true), false);
+});
+
+test("a manual clear invalidates live draft caches and readies the next user edit", () => {
+  const context = loadDraftGuardFunctions();
+  const key = "sfdg:draft:tab-42:case-1:post";
+  const editor = {};
+  const state = context.__draftGuardState;
+
+  state.draftCache.set(key, { value: "pending text" });
+  state.trackedEditors.set(editor, { storageKey: key });
+
+  context.handleManualDraftClear({ all: true });
+
+  assert.equal(state.draftCache.has(key), false);
+  assert.equal(state.clearedDraftKeys.has(key), true);
+  assert.equal(state.draftGenerations.get(key), 1);
+  assert.equal(state.clearedEditorReadyKeys.get(editor), key);
+});
+
+test("a targeted manual clear ignores non-draft keys", () => {
+  const context = loadDraftGuardFunctions();
+  const state = context.__draftGuardState;
+
+  context.handleManualDraftClear({ keys: ["showToasts", "sfdg:draft:one"] });
+
+  assert.deepEqual(Array.from(state.clearedDraftKeys), ["sfdg:draft:one"]);
+});
+
+test("a manual clear invalidates a draft write already waiting in its storage queue", async () => {
+  const context = loadDraftGuardFunctions();
+  const key = "sfdg:draft:queued";
+  const state = context.__draftGuardState;
+  let releaseQueue;
+  state.draftStorageQueues.set(key, new Promise((resolve) => {
+    releaseQueue = resolve;
+  }));
+
+  const persist = context.persistDraft(
+    {},
+    {
+      storageKey: key,
+      scope: "scope",
+      fieldKey: "field",
+      actionType: "post",
+      label: "Post"
+    },
+    {
+      value: "queued text",
+      html: "",
+      url: "https://example.lightning.force.com",
+      title: "Case"
+    }
+  );
+
+  await Promise.resolve();
+  context.handleManualDraftClear({ all: true });
+  releaseQueue();
+  await persist;
+
+  assert.deepEqual(context.__storageWrites, []);
+  assert.equal(state.clearedDraftKeys.has(key), true);
 });

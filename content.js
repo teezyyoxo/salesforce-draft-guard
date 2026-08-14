@@ -13,6 +13,7 @@ const DEBUG_PREFIX = "[SFDG]";
 const EXTENSION_CONTEXT_INVALIDATED_TEXT = "extension context invalidated";
 const TAB_CONTEXT_MESSAGE_TYPE = "sfdg:get-tab-context";
 const FALLBACK_TAB_CONTEXT_STORAGE_KEY = "sfdg:tab-context";
+const MANUAL_CLEAR_SIGNAL_KEY = "sfdg:draft-clear-signal";
 const DEFAULT_SETTINGS = {
   protectedActions: ["send", "share", "save", "post", "log a call"],
   fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
@@ -435,6 +436,14 @@ function handleFocusEvent(event) {
 }
 
 function handleStorageChange(changes, areaName) {
+  if (
+    areaName === "local" &&
+    changes[MANUAL_CLEAR_SIGNAL_KEY] &&
+    changes[MANUAL_CLEAR_SIGNAL_KEY].newValue
+  ) {
+    handleManualDraftClear(changes[MANUAL_CLEAR_SIGNAL_KEY].newValue);
+  }
+
   if (areaName === "session" || areaName === "local") {
     const removedDraftKeys = Object.entries(changes)
       .filter(([key, change]) => key.startsWith(STORAGE_PREFIX) && !change.newValue)
@@ -468,6 +477,40 @@ function handleStorageChange(changes, areaName) {
 
   loadSettings().then((nextSettings) => {
     settings = nextSettings;
+  });
+}
+
+function handleManualDraftClear(command) {
+  const storageKeys = new Set();
+
+  if (command && command.all) {
+    draftCache.forEach((_draft, key) => storageKeys.add(key));
+    draftStorageQueues.forEach((_operation, key) => storageKeys.add(key));
+    trackedEditors.forEach((meta) => storageKeys.add(meta.storageKey));
+    pendingActions.forEach((action) => {
+      (action.draftKeys || []).forEach((key) => storageKeys.add(key));
+    });
+  } else if (command && Array.isArray(command.keys)) {
+    command.keys
+      .filter((key) => typeof key === "string" && key.startsWith(STORAGE_PREFIX))
+      .forEach((key) => storageKeys.add(key));
+  }
+
+  const keys = Array.from(storageKeys);
+  if (!keys.length) {
+    return;
+  }
+
+  markDraftKeysCleared(keys);
+
+  // A manual clear is different from a successful Send/Share/Save. Existing Salesforce text
+  // stays unsaved, but the next genuine edit may begin a fresh autosave immediately; it does
+  // not have to wait for Salesforce to empty and recycle the composer first.
+  const keySet = new Set(keys);
+  trackedEditors.forEach((meta, editor) => {
+    if (keySet.has(meta.storageKey)) {
+      clearedEditorReadyKeys.set(editor, meta.storageKey);
+    }
   });
 }
 
@@ -785,7 +828,15 @@ async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = n
     editorDraftOwnership.set(element, meta.storageKey);
   }
   const mutationGeneration = getDraftGeneration(meta.storageKey);
-  await queueDraftStorageOperation(meta.storageKey, () => setDraftValue(meta.storageKey, draft));
+  await queueDraftStorageOperation(meta.storageKey, () => {
+    if (
+      clearedDraftKeys.has(meta.storageKey) ||
+      getDraftGeneration(meta.storageKey) !== mutationGeneration
+    ) {
+      return;
+    }
+    return setDraftValue(meta.storageKey, draft);
+  });
   if (getDraftGeneration(meta.storageKey) === mutationGeneration) {
     clearedDraftKeys.delete(meta.storageKey);
   }

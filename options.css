@@ -80,6 +80,24 @@ h2 {
   align-items: center;
 }
 
+.panel-danger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.panel-danger .panel-copy {
+  margin-bottom: 0;
+}
+
+.storage-actions {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 8px;
+}
+
 .check-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -169,6 +187,19 @@ textarea {
   border: 1px solid var(--line);
 }
 
+.button-danger {
+  background: #8a352f;
+}
+
+.button-danger:hover {
+  background: #6f2924;
+}
+
+.button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .status {
   margin: 0;
   min-height: 1.2em;
@@ -185,5 +216,14 @@ textarea {
 
   .button {
     width: 100%;
+  }
+
+  .panel-danger {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .storage-actions {
+    justify-items: stretch;
   }
 }

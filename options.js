@@ -36,12 +36,15 @@ const toastBackgroundColorNode = document.getElementById("toastBackgroundColor")
 const statusNode = document.getElementById("status");
 const saveButton = document.getElementById("save");
 const resetButton = document.getElementById("reset");
+const clearDraftsButton = document.getElementById("clearDrafts");
+const draftStatusNode = document.getElementById("draftStatus");
 
 renderActionOptions();
 loadSettings();
 
 saveButton.addEventListener("click", saveSettings);
 resetButton.addEventListener("click", resetDefaults);
+clearDraftsButton.addEventListener("click", clearDraftsAndCache);
 
 function renderActionOptions() {
   actionsNode.innerHTML = ACTION_OPTIONS.map(
@@ -82,6 +85,21 @@ async function resetDefaults() {
   await settingsArea.set(DEFAULT_SETTINGS);
   await loadSettings();
   flashStatus("Defaults restored.");
+}
+
+async function clearDraftsAndCache() {
+  clearDraftsButton.disabled = true;
+  try {
+    const clearedCount = await SfdgDraftStorage.clearAllDrafts();
+    flashDraftStatus(clearedCount
+      ? `Cleared ${clearedCount} saved draft${clearedCount === 1 ? "" : "s"} and the live draft cache.`
+      : "The live draft cache is clear.");
+  } catch (error) {
+    console.error("Salesforce Draft Guard failed to clear all drafts.", error);
+    flashDraftStatus("Drafts could not be cleared. Please try again.");
+  } finally {
+    clearDraftsButton.disabled = false;
+  }
 }
 
 function collectSettings() {
@@ -143,4 +161,12 @@ function flashStatus(message) {
   flashStatus.timerId = window.setTimeout(() => {
     statusNode.textContent = "";
   }, 2200);
+}
+
+function flashDraftStatus(message) {
+  draftStatusNode.textContent = message;
+  window.clearTimeout(flashDraftStatus.timerId);
+  flashDraftStatus.timerId = window.setTimeout(() => {
+    draftStatusNode.textContent = "";
+  }, 4000);
 }

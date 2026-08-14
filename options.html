@@ -94,6 +94,17 @@
         </div>
       </section>
 
+      <section class="panel panel-danger">
+        <div>
+          <h2>Draft Storage</h2>
+          <p class="panel-copy">Remove every saved draft and cancel any draft saves currently waiting in open Salesforce tabs. Your settings are preserved.</p>
+        </div>
+        <div class="storage-actions">
+          <button id="clearDrafts" class="button button-danger" type="button">Clear Drafts / Cache</button>
+          <p id="draftStatus" class="status" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+
       <footer class="footer">
         <button id="reset" class="button button-secondary" type="button">Reset Defaults</button>
         <button id="save" class="button" type="button">Save Settings</button>
@@ -101,6 +112,7 @@
       </footer>
     </main>
 
+    <script src="draft-storage.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

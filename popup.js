@@ -1,33 +1,28 @@
-const STORAGE_PREFIX = "sfdg:draft:";
-const sessionStorageArea = chrome.storage.session;
-const localStorageArea = chrome.storage.local;
-
 const draftsNode = document.getElementById("drafts");
 const summaryNode = document.getElementById("summary");
+const statusNode = document.getElementById("status");
 const refreshButton = document.getElementById("refresh");
 const clearAllButton = document.getElementById("clearAll");
 const openOptionsButton = document.getElementById("openOptions");
 
 refreshButton.addEventListener("click", renderDrafts);
-clearAllButton.addEventListener("click", clearAllDrafts);
+clearAllButton.addEventListener("click", clearAllDraftsFromPopup);
 openOptionsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
 draftsNode.addEventListener("click", handleDraftAction);
 
 renderDrafts();
 
 async function renderDrafts() {
-  const drafts = await loadDrafts();
+  const drafts = await SfdgDraftStorage.listDrafts();
   summaryNode.textContent = drafts.length
     ? `${drafts.length} saved draft${drafts.length === 1 ? "" : "s"} in extension storage.`
     : "No saved drafts right now.";
 
   if (!drafts.length) {
     draftsNode.innerHTML = '<div class="empty-state">Your draft store is empty. Once you start typing in a protected Salesforce composer, it will appear here.</div>';
-    clearAllButton.disabled = true;
     return;
   }
 
-  clearAllButton.disabled = false;
   draftsNode.innerHTML = drafts
     .map(
       (draft) => `
@@ -48,37 +43,20 @@ async function renderDrafts() {
     .join("");
 }
 
-async function loadDrafts() {
-  const stores = await Promise.all([
-    readStorageArea(sessionStorageArea),
-    readStorageArea(localStorageArea)
-  ]);
-
-  const merged = new Map();
-  for (const store of stores) {
-    for (const [key, draft] of Object.entries(store)) {
-      if (!key.startsWith(STORAGE_PREFIX)) {
-        continue;
-      }
-
-      const current = merged.get(key);
-      if (!current || (draft.updatedAt || 0) >= (current.updatedAt || 0)) {
-        merged.set(key, { key, ...draft });
-      }
-    }
+async function clearAllDraftsFromPopup() {
+  clearAllButton.disabled = true;
+  try {
+    const clearedCount = await SfdgDraftStorage.clearAllDrafts();
+    await renderDrafts();
+    statusNode.textContent = clearedCount
+      ? `Cleared ${clearedCount} saved draft${clearedCount === 1 ? "" : "s"} and the live draft cache.`
+      : "The live draft cache is clear.";
+  } catch (error) {
+    console.error("Salesforce Draft Guard failed to clear all drafts.", error);
+    statusNode.textContent = "Drafts could not be cleared. Please try again.";
+  } finally {
+    clearAllButton.disabled = false;
   }
-
-  return Array.from(merged.values()).sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
-}
-
-async function clearAllDrafts() {
-  const drafts = await loadDrafts();
-  if (!drafts.length) {
-    return;
-  }
-
-  await removeKeys(drafts.map((draft) => draft.key));
-  await renderDrafts();
 }
 
 async function handleDraftAction(event) {
@@ -87,32 +65,14 @@ async function handleDraftAction(event) {
     return;
   }
 
-  await removeKeys([button.dataset.key]);
-  await renderDrafts();
-}
-
-async function readStorageArea(area) {
-  if (!area) {
-    return {};
-  }
-
   try {
-    return await area.get(null);
+    await SfdgDraftStorage.clearDraftKeys([button.dataset.key]);
+    await renderDrafts();
+    statusNode.textContent = "Draft cleared.";
   } catch (error) {
-    console.warn("Salesforce Draft Guard popup failed to read a storage area.", error);
-    return {};
+    console.error("Salesforce Draft Guard failed to clear a draft.", error);
+    statusNode.textContent = "That draft could not be cleared. Please try again.";
   }
-}
-
-async function removeKeys(keys) {
-  const tasks = [];
-  if (sessionStorageArea) {
-    tasks.push(sessionStorageArea.remove(keys).catch(() => {}));
-  }
-  if (localStorageArea) {
-    tasks.push(localStorageArea.remove(keys).catch(() => {}));
-  }
-  await Promise.all(tasks);
 }
 
 function formatTimestamp(value) {
@@ -129,6 +89,7 @@ function formatTimestamp(value) {
 }
 
 function truncate(value, maxLength) {
+  value = String(value || "");
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 

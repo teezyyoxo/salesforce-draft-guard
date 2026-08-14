@@ -1,5 +1,6 @@
 const STORAGE_PREFIX = "sfdg:draft:";
 const SAVE_DELAY_MS = 700;
+const EMAIL_BASELINE_SETTLE_MS = 800;
 const TOAST_BURST_RESET_MS = 1500;
 const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
@@ -48,6 +49,8 @@ const toastedFieldKeys = new Set();
 const clearedDraftKeys = new Set();
 const draftGenerations = new Map();
 const draftStorageQueues = new Map();
+const emailDraftStates = new WeakMap();
+const emailRestoreTimers = new WeakMap();
 const sessionStorageArea = chrome.storage.session;
 const localStorageArea = chrome.storage.local;
 const settingsArea = chrome.storage.sync || chrome.storage.local;
@@ -621,6 +624,14 @@ function scheduleSave(element, eventType = "", eventIsTrusted = false) {
     return;
   }
 
+  // Salesforce initializes and rerenders the Email composer by mutating the CKEditor body.
+  // Those mutations include signatures and the entire quoted conversation, and are not user
+  // edits. Only a trusted edit sequence may create an Email draft, and the pre-edit body is
+  // retained as an immutable baseline so only the newly authored prefix is persisted.
+  if (isEmailEditorElement(element) && !prepareEmailDraftEvent(element, eventType, eventIsTrusted)) {
+    return;
+  }
+
   const clearedMeta = clearedDraftKeys.size
     ? trackedEditors.get(element) || getDraftMetadata(element)
     : null;
@@ -772,16 +783,261 @@ function clearDraftForEmptyElement(element) {
 }
 
 function captureDraftSnapshot(element) {
+  if (isEmailEditorElement(element)) {
+    return captureEmailDraftSnapshot(element);
+  }
+
   const value = readElementValue(element);
   const rawHtml = readElementHtml(element);
   return {
     value,
-    html: isEmailEditorElement(element) && rawHtml
-      ? normalizeEmailDraftHtml(rawHtml, element.ownerDocument || document)
-      : rawHtml,
+    html: rawHtml,
     url: getPageLocationHref(),
     title: getPageTitle()
   };
+}
+
+function initializeEmailDraftState(element, knownRecordId = "") {
+  if (!isEmailEditorElement(element)) {
+    return null;
+  }
+
+  const recordId = knownRecordId || getRecordIdForScope(getContainer(element));
+  if (!recordId) {
+    return null;
+  }
+
+  let state = emailDraftStates.get(element);
+  if (state && state.recordId !== recordId) {
+    const existingTimer = emailRestoreTimers.get(element);
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+      emailRestoreTimers.delete(element);
+    }
+    state = null;
+  }
+  if (!state) {
+    state = {
+      recordId,
+      baselineValue: "",
+      baselineHtml: "",
+      authoredValue: "",
+      authoredHtml: "",
+      editStarted: false,
+      captureSafe: true,
+      readyForRestore: false
+    };
+    emailDraftStates.set(element, state);
+    updateEmailBaseline(element, state);
+  }
+  return state;
+}
+
+function updateEmailBaseline(element, state = emailDraftStates.get(element)) {
+  if (!state || state.editStarted || restoringNow.has(element)) {
+    return;
+  }
+
+  state.baselineValue = readElementValue(element);
+  state.baselineHtml = readElementHtml(element) || "";
+  state.authoredValue = "";
+  state.authoredHtml = "";
+  state.captureSafe = true;
+  state.readyForRestore = false;
+  queueEmailRestoreAfterBaselineSettles(element, state);
+}
+
+function queueEmailRestoreAfterBaselineSettles(element, state) {
+  const existingTimer = emailRestoreTimers.get(element);
+  if (existingTimer) {
+    window.clearTimeout(existingTimer);
+  }
+
+  const timerId = window.setTimeout(() => {
+    emailRestoreTimers.delete(element);
+    if (state.editStarted || restoringNow.has(element)) {
+      return;
+    }
+    state.readyForRestore = true;
+    restoreDraft(element).catch((error) => {
+      console.error("Salesforce Draft Guard failed to restore a settled Email draft.", error);
+    });
+  }, EMAIL_BASELINE_SETTLE_MS);
+  emailRestoreTimers.set(element, timerId);
+}
+
+function prepareEmailDraftEvent(element, eventType, eventIsTrusted) {
+  const state = initializeEmailDraftState(element);
+  if (!state) {
+    return false;
+  }
+
+  if (!eventIsTrusted) {
+    if (!state.editStarted) {
+      updateEmailBaseline(element, state);
+    } else if (!readElementValue(element).trim() && !(readElementHtml(element) || "").trim()) {
+      // Salesforce empties and reuses the CKEditor body after Send. Reset the authored/baseline
+      // boundary so the next real reply can be protected as a new draft.
+      state.editStarted = false;
+      state.authoredValue = "";
+      state.authoredHtml = "";
+      state.captureSafe = true;
+      updateEmailBaseline(element, state);
+    } else {
+      reconcileEmailFrameworkMutation(element, state);
+      refreshPendingEmailSnapshot(element, state);
+    }
+    return false;
+  }
+
+  if (eventType === "beforeinput" || eventType === "paste") {
+    reconcileEmailStateBeforeEdit(element, state);
+    state.editStarted = true;
+    state.readyForRestore = true;
+    return state.captureSafe;
+  }
+
+  // A standalone input event gives us no trustworthy pre-edit boundary between authored text
+  // and quoted history. Modern CKEditor emits beforeinput/paste first; otherwise skip the save
+  // instead of risking persistence of the full conversation.
+  if (!state.editStarted) {
+    return false;
+  }
+
+  return state.captureSafe && (eventType === "input" || eventType === "change");
+}
+
+function reconcileEmailStateBeforeEdit(element, state) {
+  const currentValue = readElementValue(element);
+  const currentHtml = readElementHtml(element) || "";
+
+  if (!state.editStarted) {
+    state.baselineValue = currentValue;
+    state.baselineHtml = currentHtml;
+    state.authoredValue = "";
+    state.authoredHtml = "";
+    state.captureSafe = true;
+    return;
+  }
+
+  const authoredValue = deriveAuthoredEmailPrefix(currentValue, state.baselineValue);
+  if (authoredValue === null) {
+    state.captureSafe = false;
+    return;
+  }
+
+  state.authoredValue = authoredValue;
+  const authoredHtml = deriveAuthoredEmailPrefix(currentHtml, state.baselineHtml);
+  state.authoredHtml = authoredHtml === null ? "" : authoredHtml;
+}
+
+function reconcileEmailFrameworkMutation(element, state) {
+  if (!state.captureSafe || restoringNow.has(element)) {
+    return;
+  }
+
+  const currentValue = readElementValue(element);
+  if (!state.baselineValue && currentValue !== state.authoredValue) {
+    if (currentValue.startsWith(state.authoredValue)) {
+      state.baselineValue = currentValue.slice(state.authoredValue.length);
+      const currentHtml = readElementHtml(element) || "";
+      if (currentHtml.startsWith(state.authoredHtml)) {
+        state.baselineHtml = currentHtml.slice(state.authoredHtml.length);
+      }
+      return;
+    }
+    state.captureSafe = false;
+    return;
+  }
+
+  const derivedValue = deriveAuthoredEmailPrefix(currentValue, state.baselineValue);
+  if (derivedValue !== null) {
+    state.authoredValue = derivedValue;
+    return;
+  }
+
+  // Salesforce can append the quoted chain after the first user event. If the already-captured
+  // authored prefix is byte-for-byte intact, adopt only the appended suffix as the baseline.
+  if (state.authoredValue && currentValue.startsWith(state.authoredValue)) {
+    state.baselineValue = currentValue.slice(state.authoredValue.length);
+    const currentHtml = readElementHtml(element) || "";
+    if (state.authoredHtml && currentHtml.startsWith(state.authoredHtml)) {
+      state.baselineHtml = currentHtml.slice(state.authoredHtml.length);
+    } else {
+      state.baselineHtml = "";
+      state.authoredHtml = "";
+    }
+    return;
+  }
+
+  state.captureSafe = false;
+}
+
+function captureEmailDraftSnapshot(element) {
+  const state = emailDraftStates.get(element);
+  const snapshot = {
+    value: "",
+    html: undefined,
+    url: getPageLocationHref(),
+    title: getPageTitle(),
+    emailContextKey: "",
+    valid: false
+  };
+  if (!state || !state.editStarted || !state.captureSafe) {
+    return snapshot;
+  }
+
+  const currentValue = readElementValue(element);
+  const authoredValue = deriveAuthoredEmailPrefix(currentValue, state.baselineValue);
+  if (authoredValue === null) {
+    state.captureSafe = false;
+    return snapshot;
+  }
+
+  const currentHtml = readElementHtml(element) || "";
+  const authoredHtml = deriveAuthoredEmailPrefix(currentHtml, state.baselineHtml);
+  state.authoredValue = authoredValue;
+  state.authoredHtml = authoredHtml === null ? "" : authoredHtml;
+  snapshot.value = authoredValue;
+  snapshot.html = authoredHtml
+    ? normalizeEmailDraftHtml(authoredHtml, element.ownerDocument || document)
+    : undefined;
+  snapshot.emailContextKey = getEmailBaselineContextKey(state);
+  snapshot.valid = true;
+  return snapshot;
+}
+
+function refreshPendingEmailSnapshot(element, state) {
+  if (!state.captureSafe) {
+    return;
+  }
+  const scheduledSave = saveTimers.get(element);
+  if (!scheduledSave || !scheduledSave.snapshot) {
+    return;
+  }
+  const snapshot = captureEmailDraftSnapshot(element);
+  if (snapshot.valid) {
+    scheduledSave.snapshot = snapshot;
+  }
+}
+
+function getEmailBaselineContextKey(state) {
+  if (!state) {
+    return "";
+  }
+  return hashKey(`${state.recordId}::${normalizeWhitespace(state.baselineValue)}`);
+}
+
+function deriveAuthoredEmailPrefix(currentContent, baselineContent) {
+  const current = String(currentContent || "");
+  const baseline = String(baselineContent || "");
+  if (!baseline) {
+    return current;
+  }
+  if (!current.endsWith(baseline)) {
+    return null;
+  }
+  return current.slice(0, current.length - baseline.length);
 }
 
 async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = null) {
@@ -795,6 +1051,13 @@ async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = n
     });
   }
   if (!meta) {
+    return;
+  }
+
+  if (snapshot.valid === false) {
+    debugWarn("email draft save skipped because quoted-content isolation was ambiguous", {
+      key: meta.storageKey
+    });
     return;
   }
 
@@ -818,8 +1081,12 @@ async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = n
     scope: meta.scope,
     fieldKey: meta.fieldKey,
     actionType: meta.actionType,
-    label: meta.label
+    label: meta.label,
+    recordId: meta.recordId
   };
+  if (snapshot.emailContextKey) {
+    draft.emailContextKey = snapshot.emailContextKey;
+  }
 
   draftCache.set(meta.storageKey, draft);
   const liveMeta = getDraftMetadata(element);
@@ -907,6 +1174,9 @@ function scanAndRestore(root) {
     const meta = getDraftMetadata(element);
     if (meta) {
       trackDraftEditor(element, meta);
+      if (isEmailEditorElement(element)) {
+        initializeEmailDraftState(element, meta.recordId);
+      }
     }
     ensureDraftObserver(element);
     restoreDraft(element).catch((error) => {
@@ -926,6 +1196,13 @@ async function restoreDraft(element) {
         reason: "missing-metadata"
       });
     }
+    return;
+  }
+
+  const emailState = isEmailEditorElement(element)
+    ? initializeEmailDraftState(element, meta.recordId)
+    : null;
+  if (emailState && (!emailState.readyForRestore || emailState.editStarted)) {
     return;
   }
 
@@ -968,7 +1245,34 @@ async function restoreDraft(element) {
     return;
   }
 
-  if (!shouldRestoreOverCurrentValue(currentValue)) {
+  if (!draft.recordId || draft.recordId !== meta.recordId) {
+    // Schema 3 drafts always carry their unhashed Salesforce record owner. Any missing or
+    // mismatched owner is legacy/unsafe data and must never be injected into a composer.
+    restoredDraftKeys.set(element, meta.storageKey);
+    clearDraftKeys([meta.storageKey]).catch((error) => {
+      console.error("Salesforce Draft Guard failed to discard an unsafe draft.", error);
+    });
+    return;
+  }
+
+  if (
+    emailState &&
+    (!draft.emailContextKey || draft.emailContextKey !== getEmailBaselineContextKey(emailState))
+  ) {
+    // A Case can expose Reply/Reply All composers for different EmailMessage records. The
+    // quoted-history fingerprint ensures a draft for one reply target never enters another,
+    // even though both composers belong to the same Case.
+    restoredDraftKeys.set(element, meta.storageKey);
+    clearDraftKeys([meta.storageKey]).catch((error) => {
+      console.error("Salesforce Draft Guard failed to discard an Email-context mismatch.", error);
+    });
+    return;
+  }
+
+  const restoreComparisonValue = emailState
+    ? deriveAuthoredEmailPrefix(currentValue, emailState.baselineValue)
+    : currentValue;
+  if (restoreComparisonValue === null || !shouldRestoreOverCurrentValue(restoreComparisonValue)) {
     // The field already has content; never overwrite it. Mark handled so we don't keep
     // re-checking and never fight the user's edits.
     restoredDraftKeys.set(element, meta.storageKey);
@@ -995,6 +1299,12 @@ async function restoreDraft(element) {
   // Mark handled now so we never re-restore over the user's subsequent edits, even if they
   // later clear the field entirely.
   restoredDraftKeys.set(element, meta.storageKey);
+
+  if (emailState) {
+    emailState.editStarted = true;
+    emailState.authoredValue = getDraftText(draft);
+    emailState.authoredHtml = draft.html || "";
+  }
 
   writeElementValueGuarded(element, draft);
   trackDraftEditor(element, meta);
@@ -1055,7 +1365,7 @@ function getDraftKeysForContainer(container, actionLabel = "") {
 
   // The CKEditor Email body is in a separate frame, so the top-page Send button cannot
   // enumerate it directly. Its canonical key is safe to include only for Send.
-  if (normalizedAction === "send") {
+  if (normalizedAction === "send" && emailScope) {
     keys.push(`${STORAGE_PREFIX}${emailScope}:${hashKey("email-body")}`);
   }
   for (const meta of trackedEditors.values()) {
@@ -1165,6 +1475,14 @@ function getDraftMetadata(element) {
   const container = getContainer(element);
   const actionType = getContainerActionType(container);
   const label = getElementLabel(element);
+  const recordId = getRecordIdForScope(container);
+  if (!recordId) {
+    debugWarn("draft skipped because its Salesforce record ownership is ambiguous", {
+      actionType,
+      label
+    });
+    return null;
+  }
 
   let scope;
   let fieldKey;
@@ -1173,10 +1491,10 @@ function getDraftMetadata(element) {
     // titles/aria-labels) that change on every page load, which broke key matching between save
     // and restore. Derive a canonical key from stable signals only — the record context plus a
     // fixed field id — so the Email draft restores reliably.
-    scope = getEmailDraftScope(container);
+    scope = getEmailDraftScope(container, recordId);
     fieldKey = hashKey("email-body");
   } else {
-    scope = getContainerScope(container);
+    scope = getContainerScope(container, recordId);
     fieldKey = getFieldKey(element, container);
   }
 
@@ -1185,15 +1503,17 @@ function getDraftMetadata(element) {
     fieldKey,
     actionType,
     label,
+    recordId,
     storageKey: `${STORAGE_PREFIX}${scope}:${fieldKey}`
   };
 }
 
-function getEmailDraftScope(container) {
+function getEmailDraftScope(container, knownRecordId = "") {
   // Resolve the record from the CKEditor iframe's owning record wrapper when possible. This
   // keeps Email aligned with its outer Send action even when several Salesforce console
   // workspace tabs remain mounted and the browser URL represents only the active one.
-  return hashKey(`${getDraftTabContextKey()}::${getRecordIdForScope(container)}::email`);
+  const recordId = knownRecordId || getRecordIdForScope(container);
+  return recordId ? hashKey(`${getDraftTabContextKey()}::${recordId}::email`) : "";
 }
 
 function getContainer(element) {
@@ -1222,21 +1542,73 @@ function getContainer(element) {
 function getRecordIdForScope(container) {
   // Salesforce console workspace tabs can keep several records mounted simultaneously while
   // the URL represents only the active workspace tab. Prefer the composer's nearest explicit
-  // record wrapper (or its iframe owner), then use the top URL and page DOM as fallbacks.
-  const pageDocument = getPageDocument();
+  // record wrapper (or its iframe owner), then cautiously consider the active route.
   const recordContext = getRecordContextElement(container);
-  return (
-    findRecordIdInDom(recordContext) ||
-    findRecordIdInPageUrl() ||
-    findRecordIdInDom(pageDocument.body) ||
-    getStablePageContextKey()
-  );
+  const localRecordId = findClosestRecordId(recordContext);
+  if (localRecordId) {
+    return localRecordId;
+  }
+
+  // The active route is an acceptable fallback only for a currently rendered composer.
+  // Hidden console workspaces remain mounted while another Case owns the URL; refusing the
+  // fallback there is what prevents an inactive ticket's content from being assigned to the
+  // active ticket. Never scan the full page for an arbitrary first record id.
+  const routeRecordId = findRecordIdInPageUrl();
+  return routeRecordId &&
+    isScopeContextActive(recordContext) &&
+    !hasConflictingMountedRecordContext(routeRecordId)
+    ? routeRecordId
+    : "";
 }
 
-function getContainerScope(container) {
-  const recordId = getRecordIdForScope(container);
+function getContainerScope(container, knownRecordId = "") {
+  const recordId = knownRecordId || getRecordIdForScope(container);
+  if (!recordId) {
+    return "";
+  }
   const actionType = getContainerActionType(container);
   return hashKey(`${getDraftTabContextKey()}::${recordId}::${actionType}`);
+}
+
+function findClosestRecordId(root) {
+  if (!isElementNode(root)) {
+    return "";
+  }
+
+  const directId = readRecordIdAttribute(root);
+  if (directId) {
+    return directId;
+  }
+
+  if (typeof root.closest !== "function") {
+    return "";
+  }
+  return readRecordIdAttribute(root.closest("[data-recordid], [data-record-id], [record-id]"));
+}
+
+function isScopeContextActive(recordContext) {
+  return isElementNode(recordContext) && isElementRenderable(recordContext);
+}
+
+function hasConflictingMountedRecordContext(routeRecordId) {
+  const pageDocument = getPageDocument();
+  const root = pageDocument && pageDocument.body;
+  if (!root || typeof root.querySelectorAll !== "function") {
+    return false;
+  }
+
+  const recordNodes = root.querySelectorAll("[data-recordid], [data-record-id], [record-id]");
+  for (const recordNode of recordNodes) {
+    const candidate = readRecordIdAttribute(recordNode);
+    if (
+      candidate &&
+      candidate !== routeRecordId &&
+      candidate.slice(0, 3) === routeRecordId.slice(0, 3)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function getFieldKey(element, container) {
@@ -1406,7 +1778,7 @@ function findRecordIdInPageUrl() {
     debugWarn("failed to parse page location for record id", error);
   }
 
-  const urlMatch = pathname.match(/\/lightning\/r\/[^/]+\/([a-zA-Z0-9]{15,18})(?:\/|$)/i);
+  const urlMatch = pathname.match(/\/lightning\/r\/[^/]+\/([a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?)(?:\/|$)/i);
   return urlMatch ? urlMatch[1] : "";
 }
 
@@ -1507,6 +1879,8 @@ function releaseRestoreGuard(element) {
 
 function restoreEditableDraft(element, draft) {
   const ownerDocument = element.ownerDocument || document;
+  const isEmailEditor = isEmailEditorElement(element);
+  const valueBeforeRestore = readElementValue(element);
   const previouslyFocusedElement = ownerDocument.activeElement || null;
   const shouldRestoreFocus = previouslyFocusedElement !== element;
   const previousSelectionRanges = shouldRestoreFocus
@@ -1528,7 +1902,7 @@ function restoreEditableDraft(element, draft) {
     }
   }
 
-  if (isEmailEditorElement(element)) {
+  if (isEmailEditor) {
     debugLog("email restore: paste dispatched", { pasteHandled, hasHtml: Boolean(draft && draft.html) });
   }
 
@@ -1538,12 +1912,20 @@ function restoreEditableDraft(element, draft) {
   window.setTimeout(() => {
     try {
       const current = readElementValue(element);
-      if (!current || !current.trim()) {
+      const expectedText = normalizeEditableValue(getDraftText(draft));
+      const emailRestoreApplied = isEmailEditor &&
+        current !== valueBeforeRestore &&
+        normalizeEditableValue(current).startsWith(expectedText);
+      if (isEmailEditor ? !emailRestoreApplied : (!current || !current.trim())) {
         debugLog("restore: paste produced no content, using DOM write fallback", {
           pasteHandled,
           hasHtml: Boolean(draft && typeof draft === "object" && draft.html)
         });
-        writeElementValue(element, draft);
+        if (isEmailEditor) {
+          writeEmailDraftBeforeExisting(element, draft);
+        } else {
+          writeElementValue(element, draft);
+        }
         dispatchSyntheticInput(element);
       } else {
         debugLog("restore: paste applied", { length: current.length });
@@ -1693,6 +2075,9 @@ function insertViaPaste(element, ownerDocument, draft) {
       if (selection && typeof selection.removeAllRanges === "function") {
         const range = ownerDocument.createRange();
         range.selectNodeContents(element);
+        if (isEmailEditorElement(element) && readElementValue(element).trim()) {
+          range.collapse(true);
+        }
         selection.removeAllRanges();
         selection.addRange(range);
       }
@@ -1720,6 +2105,28 @@ function insertViaPaste(element, ownerDocument, draft) {
     debugWarn("synthetic paste restore failed", error);
     return false;
   }
+}
+
+function writeEmailDraftBeforeExisting(element, draft) {
+  const ownerDocument = element.ownerDocument || document;
+  const existingHtml = typeof element.innerHTML === "string" ? element.innerHTML : "";
+  const storedHtml = draft && typeof draft === "object" ? draft.html : "";
+  const authoredHtml = storedHtml
+    ? normalizeEmailDraftHtml(storedHtml, ownerDocument)
+    : escapeDraftTextForHtml(getDraftText(draft));
+  const separator = existingHtml && authoredHtml && !/<br\s*\/?>\s*$/i.test(authoredHtml)
+    ? "<br>"
+    : "";
+  element.innerHTML = `${authoredHtml}${separator}${existingHtml}`;
+}
+
+function escapeDraftTextForHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replace(/\r\n?|\n/g, "<br>");
 }
 
 function getDraftText(draft) {

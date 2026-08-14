@@ -79,17 +79,30 @@ test("a missing draft schema removes only unsafe legacy drafts", async () => {
   assert.deepEqual(removed.session, ["sfdg:draft:session"]);
   assert.deepEqual(removed.local, ["sfdg:draft:local"]);
   assert.equal(written.local.length, 1);
-  assert.equal(written.local[0]["sfdg:draft-schema"], 2);
+  assert.equal(written.local[0]["sfdg:draft-schema"], 3);
 });
 
 test("current-schema reloads do not purge drafts", async () => {
   const { listeners, removed } = loadBackground(
     { "sfdg:draft:session": { value: "current" } },
-    { "sfdg:draft:local": { value: "current" }, "sfdg:draft-schema": 2 }
+    { "sfdg:draft:local": { value: "current" }, "sfdg:draft-schema": 3 }
   );
 
   await listeners.installed({ reason: "update", previousVersion: "0.6.0" });
 
   assert.deepEqual(removed.session, []);
   assert.deepEqual(removed.local, []);
+});
+
+test("the 0.6.3 schema upgrade purges drafts that lack verified record ownership", async () => {
+  const { listeners, removed, written } = loadBackground(
+    { "sfdg:draft:session": { value: "unsafe Email chain" } },
+    { "sfdg:draft:local": { value: "unsafe Post" }, "sfdg:draft-schema": 2 }
+  );
+
+  await listeners.installed({ reason: "update", previousVersion: "0.6.2" });
+
+  assert.deepEqual(removed.session, ["sfdg:draft:session"]);
+  assert.deepEqual(removed.local, ["sfdg:draft:local"]);
+  assert.equal(written.local[0]["sfdg:draft-schema"], 3);
 });

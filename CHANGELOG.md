@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.6.3] - 2026-08-14
+
+Emergency isolation hotfix for cross-ticket draft restoration and Email history capture.
+
+### Fixed
+- Drafts now include their verified, unhashed Salesforce record owner, and restore rejects and
+  removes any entry whose owner is missing or differs from the current composer. This is an
+  independent safety check in addition to the scoped storage key.
+- Hidden Salesforce console workspace composers can no longer borrow the active browser URL as
+  their record identity. A composer uses its nearest explicit record wrapper; route fallback is
+  allowed only for a rendered composer when no conflicting mounted record is present. Ambiguous
+  composers are not saved or restored.
+- Email autosave no longer treats CKEditor/Salesforce DOM mutations as user edits. The initial
+  signature and quoted conversation are retained as a baseline, and only the reply authored
+  above that baseline is persisted. If the boundary cannot be proven, saving fails closed.
+- Email restore waits for Salesforce's body initialization to settle and prepends the recovered
+  authored reply without replacing the signature or quoted chain already in the composer.
+- Email drafts carry a fingerprint of their prefilled signature/quoted-history baseline, so two
+  different Reply actions on the same Case cannot exchange drafts either.
+- Reused Email editor elements discard the prior ticket's baseline when their verified record
+  owner changes.
+
+### Migration
+- Advanced the draft schema to 3. Updating to 0.6.3 removes all drafts created by older builds,
+  because those entries lack independently verifiable record ownership and may contain quoted
+  Email history. Extension settings are preserved.
+
+### Changed
+- Bumped the extension version to 0.6.3.
+
 ## [0.6.2] - 2026-08-14
 
 ### Added

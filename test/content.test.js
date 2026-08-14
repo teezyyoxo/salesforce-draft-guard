@@ -479,6 +479,66 @@ test("mounted Salesforce workspace tabs use their local Case instead of the acti
   `);
 });
 
+test("a hidden workspace composer cannot borrow the active ticket URL", () => {
+  loadContentScript(`
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/500ACTIVE000002/view";
+    const hiddenComposer = {
+      nodeType: 1,
+      tagName: "DIV",
+      getAttribute: () => "",
+      getClientRects: () => [],
+      closest: () => null,
+      matches: (selector) => selector === ".publisherInputContainer",
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+
+    assert.equal(getRecordIdForScope(hiddenComposer), "");
+    assert.equal(getContainerScope(hiddenComposer), "");
+  `);
+});
+
+test("an unowned composer cannot use the route when another ticket remains mounted", () => {
+  loadContentScript(`
+    const activeRecordId = "500ACTIVE000002";
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/" + activeRecordId + "/view";
+    document.body.querySelectorAll = () => [{
+      getAttribute: (name) => name === "data-recordid" ? "500MOUNTED00001" : ""
+    }];
+    const unownedComposer = {
+      nodeType: 1,
+      tagName: "DIV",
+      getAttribute: () => "",
+      getClientRects: () => [{}],
+      closest: () => null,
+      matches: (selector) => selector === ".publisherInputContainer",
+      querySelector: () => null,
+      querySelectorAll: () => []
+    };
+
+    assert.equal(getRecordIdForScope(unownedComposer), "");
+  `);
+});
+
+test("an unrelated mounted object does not disable the active Case route", () => {
+  loadContentScript(`
+    const activeRecordId = "500ACTIVE000002";
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/" + activeRecordId + "/view";
+    document.body.querySelectorAll = () => [{
+      getAttribute: (name) => name === "data-recordid" ? "003CONTACT000001" : ""
+    }];
+    const activeComposer = {
+      nodeType: 1,
+      tagName: "DIV",
+      getAttribute: () => "",
+      getClientRects: () => [{}],
+      closest: () => null
+    };
+
+    assert.equal(getRecordIdForScope(activeComposer), activeRecordId);
+  `);
+});
+
 test("Email iframe scope follows its owning Salesforce workspace Case", () => {
   loadContentScript(`
     window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/500ACTIVE000002/view";
@@ -508,9 +568,10 @@ test("a reused editor can restore a different ticket key exactly once", async ()
       const editor = { nodeType: 1, tagName: "DIV", getAttribute: () => "" };
       const writes = [];
       let currentKey = "ticket-0001-key";
+      let currentRecordId = "500TICKET000001";
 
-      getDraftMetadata = () => ({ storageKey: currentKey, actionType: "post" });
-      getDraftValue = async (key) => ({ [key]: { value: key } });
+      getDraftMetadata = () => ({ storageKey: currentKey, actionType: "post", recordId: currentRecordId });
+      getDraftValue = async (key) => ({ [key]: { value: key, recordId: currentRecordId } });
       readElementValue = () => "";
       isElementRenderable = () => true;
       isEmailEditorElement = () => false;
@@ -521,10 +582,41 @@ test("a reused editor can restore a different ticket key exactly once", async ()
       await restoreDraft(editor);
       await restoreDraft(editor);
       currentKey = "ticket-0004-key";
+      currentRecordId = "500TICKET000004";
       await restoreDraft(editor);
       await restoreDraft(editor);
 
       assert.deepEqual(writes, ["ticket-0001-key", "ticket-0004-key"]);
+    })()
+  `);
+});
+
+test("restore discards a draft whose stored record owner does not match the composer", async () => {
+  await loadContentScript(`
+    (async () => {
+      const editor = { nodeType: 1, tagName: "DIV", getAttribute: () => "" };
+      const key = "sfdg:draft:collision";
+      let writes = 0;
+      let discarded = 0;
+
+      getDraftMetadata = () => ({
+        storageKey: key,
+        actionType: "post",
+        recordId: "500TICKET000002"
+      });
+      getDraftValue = async () => ({
+        [key]: { value: "Ticket 0001 secret", recordId: "500TICKET000001" }
+      });
+      readElementValue = () => "";
+      isElementRenderable = () => true;
+      isEmailEditorElement = () => false;
+      writeElementValueGuarded = () => { writes += 1; };
+      clearDraftKeys = async () => { discarded += 1; };
+
+      await restoreDraft(editor);
+
+      assert.equal(writes, 0);
+      assert.equal(discarded, 1);
     })()
   `);
 });
@@ -866,6 +958,185 @@ test("email draft key is canonical and ignores per-load identifiers", () => {
     assert.equal(saved.actionType, "email");
     // Same record context, different CKEditor instance identifiers -> identical key.
     assert.equal(saved.storageKey, reloaded.storageKey);
+  `);
+});
+
+test("Email snapshots persist only the authored reply above the quoted chain", () => {
+  loadContentScript(`
+    let editorText = "From: customer@example.com\\nOriginal ticket message";
+    const editor = {
+      nodeType: 1,
+      tagName: "BODY",
+      dataset: {},
+      isContentEditable: true,
+      classList: { contains: (name) => name === "cke_editable" },
+      get innerText() { return editorText; },
+      get textContent() { return editorText; },
+      innerHTML: "",
+      getAttribute: (name) => name === "aria-label" ? "Email Body" : "",
+      getClientRects: () => [{}],
+      matches: () => false,
+      closest: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      ownerDocument: { querySelector: () => null }
+    };
+
+    assert.equal(prepareEmailDraftEvent(editor, "beforeinput", true), true);
+    editorText = "My newly typed reply\\nFrom: customer@example.com\\nOriginal ticket message";
+    assert.equal(prepareEmailDraftEvent(editor, "input", true), true);
+
+    const snapshot = captureEmailDraftSnapshot(editor);
+    assert.equal(snapshot.valid, true);
+    assert.equal(snapshot.value, "My newly typed reply\\n");
+    assert.equal(snapshot.value.includes("Original ticket message"), false);
+    assert.equal(
+      snapshot.emailContextKey,
+      hashKey("500ABCDEF123456::From: customer@example.com Original ticket message")
+    );
+  `);
+});
+
+test("different quoted Email conversations have different restore contexts on one Case", () => {
+  loadContentScript(`
+    const recordId = "500ABCDEF123456";
+    const first = getEmailBaselineContextKey({
+      recordId,
+      baselineValue: "From: first@example.com\\nFirst conversation"
+    });
+    const second = getEmailBaselineContextKey({
+      recordId,
+      baselineValue: "From: second@example.com\\nSecond conversation"
+    });
+
+    assert.notEqual(first, second);
+  `);
+});
+
+test("Email restore rejects another reply context even on the same Case", async () => {
+  await loadContentScript(`
+    (async () => {
+      const quotedChain = "From: current@example.com\\nCurrent conversation";
+      const editor = {
+        nodeType: 1,
+        tagName: "BODY",
+        dataset: {},
+        isContentEditable: true,
+        classList: { contains: (name) => name === "cke_editable" },
+        innerText: quotedChain,
+        textContent: quotedChain,
+        innerHTML: "",
+        getAttribute: (name) => name === "aria-label" ? "Email Body" : "",
+        getClientRects: () => [{}],
+        matches: () => false,
+        closest: () => null,
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        ownerDocument: { querySelector: () => null }
+      };
+      const meta = getDraftMetadata(editor);
+      const state = initializeEmailDraftState(editor, meta.recordId);
+      state.readyForRestore = true;
+      let writes = 0;
+      let discarded = 0;
+
+      getDraftValue = async () => ({
+        [meta.storageKey]: {
+          value: "Reply for a different conversation",
+          recordId: meta.recordId,
+          emailContextKey: getEmailBaselineContextKey({
+            recordId: meta.recordId,
+            baselineValue: "From: other@example.com\\nOther conversation"
+          })
+        }
+      });
+      writeElementValueGuarded = () => { writes += 1; };
+      clearDraftKeys = async () => { discarded += 1; };
+
+      await restoreDraft(editor);
+
+      assert.equal(writes, 0);
+      assert.equal(discarded, 1);
+    })()
+  `);
+});
+
+test("Salesforce Email thread mutations cannot create a draft without a user edit", () => {
+  loadContentScript(`
+    const editor = {
+      nodeType: 1,
+      tagName: "BODY",
+      dataset: {},
+      isContentEditable: true,
+      classList: { contains: (name) => name === "cke_editable" },
+      innerText: "Entire existing email chain",
+      textContent: "Entire existing email chain",
+      innerHTML: "",
+      getAttribute: (name) => name === "aria-label" ? "Email Body" : "",
+      getClientRects: () => [{}],
+      matches: () => false,
+      closest: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      ownerDocument: { querySelector: () => null }
+    };
+
+    scheduleSave(editor, "mutation", false);
+
+    assert.equal(saveTimers.has(editor), false);
+    assert.equal(captureEmailDraftSnapshot(editor).valid, false);
+  `);
+});
+
+test("a reused Email editor discards its prior ticket baseline", () => {
+  loadContentScript(`
+    let editorText = "Ticket 0001 quoted chain";
+    const editor = {
+      nodeType: 1,
+      tagName: "BODY",
+      dataset: {},
+      isContentEditable: true,
+      classList: { contains: (name) => name === "cke_editable" },
+      get innerText() { return editorText; },
+      get textContent() { return editorText; },
+      innerHTML: "",
+      getAttribute: (name) => name === "aria-label" ? "Email Body" : "",
+      getClientRects: () => [{}],
+      matches: () => false,
+      closest: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      ownerDocument: { querySelector: () => null }
+    };
+
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/500TICKET000001/view";
+    const firstState = initializeEmailDraftState(editor);
+    firstState.editStarted = true;
+
+    editorText = "Ticket 0002 quoted chain";
+    window.top.location.href = "https://example.lightning.force.com/lightning/r/Case/500TICKET000002/view";
+    const secondState = initializeEmailDraftState(editor);
+
+    assert.notEqual(firstState, secondState);
+    assert.equal(secondState.recordId, "500TICKET000002");
+    assert.equal(secondState.baselineValue, "Ticket 0002 quoted chain");
+    assert.equal(secondState.editStarted, false);
+  `);
+});
+
+test("Email restore fallback prepends a reply without replacing the quoted chain", () => {
+  loadContentScript(`
+    const editor = {
+      innerHTML: "<blockquote>Original chain</blockquote>",
+      ownerDocument: document
+    };
+
+    writeEmailDraftBeforeExisting(editor, { value: "Recovered reply" });
+
+    assert.equal(
+      editor.innerHTML,
+      "Recovered reply<br><blockquote>Original chain</blockquote>"
+    );
   `);
 });
 

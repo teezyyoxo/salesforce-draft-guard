@@ -1,6 +1,6 @@
 const STORAGE_PREFIX = "sfdg:draft:";
 const DRAFT_SCHEMA_STORAGE_KEY = "sfdg:draft-schema";
-const CURRENT_DRAFT_SCHEMA = 2;
+const CURRENT_DRAFT_SCHEMA = 3;
 
 chrome.runtime.onInstalled.addListener(handleInstalled);
 chrome.runtime.onStartup.addListener(handleStartup);

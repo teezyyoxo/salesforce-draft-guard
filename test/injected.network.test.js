@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
@@ -35,7 +36,7 @@ function loadNetworkHook() {
     postMessage: (message) => messages.push(message),
     fetch: async () => ({ ok: true, status: 200 })
   };
-  vm.runInNewContext(readFileSync("injected.js", "utf8"), {
+  vm.runInNewContext(readFileSync(path.join(__dirname, "..", "injected.js"), "utf8"), {
     URLSearchParams,
     XMLHttpRequest: FakeXMLHttpRequest,
     window

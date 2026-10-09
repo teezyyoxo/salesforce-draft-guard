@@ -1,10 +1,11 @@
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
 function loadDraftGuardFunctions() {
-  const source = readFileSync("content.js", "utf8").replace("\nbootstrap();\n", "\n") + `
+  const source = readFileSync(path.join(__dirname, "..", "content.js"), "utf8").replace("\nbootstrap();\n", "\n") + `
     globalThis.__draftGuardState = {
       clearedDraftKeys,
       clearedEditorReadyKeys,

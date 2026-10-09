@@ -168,7 +168,7 @@ Enable debug logging only when investigating; [instructions](docs/DRAFT_BEHAVIOR
 
 ## Contributing
 
-No package installation or build is needed for the extension. Keep `test/` and the root `*.test.js` files in the repository: they check draft recovery, isolation, and cleanup. They are excluded from the release ZIP. Run the checks with Node.js:
+No package installation or build is needed for the extension. All regression tests live in `test/`; keep them in the repository to check draft recovery, isolation, and cleanup. They are excluded from the release ZIP. Run the checks with Node.js:
 
 ```bash
 node --check content.js

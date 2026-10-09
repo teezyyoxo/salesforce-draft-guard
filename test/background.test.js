@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
@@ -28,7 +29,7 @@ function loadBackground(sessionValues = {}, localValues = {}) {
     console
   };
 
-  vm.runInNewContext(readFileSync("background.js", "utf8"), context, { filename: "background.js" });
+  vm.runInNewContext(readFileSync(path.join(__dirname, "..", "background.js"), "utf8"), context, { filename: "background.js" });
   return { context, listeners, removed, written };
 }
 

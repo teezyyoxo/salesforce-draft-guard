@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
@@ -29,7 +30,7 @@ function loadDraftStorage(sessionValues = {}, localValues = {}) {
     Math
   };
 
-  vm.runInNewContext(readFileSync("draft-storage.js", "utf8"), context, {
+  vm.runInNewContext(readFileSync(path.join(__dirname, "..", "draft-storage.js"), "utf8"), context, {
     filename: "draft-storage.js"
   });
   return { api: context.SfdgDraftStorage, events, local, session };

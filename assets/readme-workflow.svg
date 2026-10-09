@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="200" viewBox="0 0 1200 200" role="img" aria-labelledby="title desc"><title id="title">From draft to recovery</title><desc id="desc">Three steps: write in Salesforce, save progress locally, recover when your matching composer returns.</desc><g font-family="system-ui, -apple-system, Segoe UI, Arial, sans-serif"><rect width="1200" height="200" rx="12" fill="#f3f5f8"/><rect x="24" y="24" width="350" height="152" rx="8" fill="#fff" stroke="#c9d2dd"/>
+<circle cx="56" cy="57" r="17" fill="#0176d3"/><text x="56" y="63" text-anchor="middle" fill="#fff" font-size="17" font-weight="600">1</text>
+<text x="84" y="63" fill="#032d60" font-size="20" font-weight="600">Write in Salesforce</text>
+<text x="44" y="109" fill="#526172" font-size="16">Start an Email, Post, or</text><text x="44" y="137" fill="#526172" font-size="16">another detected activity draft.</text><text x="388" y="109" fill="#0176d3" font-size="25">→</text><rect x="425" y="24" width="350" height="152" rx="8" fill="#fff" stroke="#c9d2dd"/>
+<circle cx="457" cy="57" r="17" fill="#0176d3"/><text x="457" y="63" text-anchor="middle" fill="#fff" font-size="17" font-weight="600">2</text>
+<text x="485" y="63" fill="#032d60" font-size="20" font-weight="600">Preserve your progress</text>
+<text x="445" y="109" fill="#526172" font-size="16">Your edits stay in extension</text><text x="445" y="137" fill="#526172" font-size="16">storage as you type.</text><text x="789" y="109" fill="#0176d3" font-size="25">→</text><rect x="826" y="24" width="350" height="152" rx="8" fill="#fff" stroke="#c9d2dd"/>
+<circle cx="858" cy="57" r="17" fill="#0176d3"/><text x="858" y="63" text-anchor="middle" fill="#fff" font-size="17" font-weight="600">3</text>
+<text x="886" y="63" fill="#032d60" font-size="20" font-weight="600">Recover your draft</text>
+<text x="846" y="109" fill="#526172" font-size="16">Return to the matching composer</text><text x="846" y="137" fill="#526172" font-size="16">after a refresh or rerender.</text></g></svg>

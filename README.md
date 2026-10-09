@@ -1,129 +1,146 @@
-# Salesforce Draft Guard
+<p align="center"><a href="#install"><img src="assets/readme-hero.svg" alt="Salesforce Draft Guard — keep your place, protect your progress" width="100%"></a></p>
+<h1 align="center">Salesforce Draft Guard</h1>
+<p align="center"><strong>Write your reply. Keep your progress. Recover your draft.</strong></p>
+<p align="center">
+  <img src="https://img.shields.io/badge/version-0.6.3-0176d3" alt="Extension version 0.6.3">
+  <img src="https://img.shields.io/badge/browser-Chrome-0176d3" alt="Chrome extension">
+  <img src="https://img.shields.io/badge/Manifest-v3-032d60" alt="Manifest V3">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2e844a" alt="MIT license"></a>
+</p>
+<p align="center"><a href="#install">Install</a> · <a href="#everyday-use">Use it</a> · <a href="#settings">Settings</a> · <a href="#github-issues">Issues</a> · <a href="#privacy-and-permissions">Privacy</a> · <a href="#contributing">Contribute</a></p>
 
-Chrome extension that protects Salesforce activity drafts from accidental refreshes, field-driven frame reloads, and transient UI resets.
+Protect Salesforce Lightning Email, Post, and other detected activity drafts from refreshes, frame reloads, and transient UI resets. Review saved text from the toolbar and clear drafts when you choose.
 
-## What it does
+<p align="center"><img src="assets/readme-workflow.svg" alt="Write in Salesforce → save progress in extension storage → recover after a refresh" width="100%"></p>
 
-- Watches Salesforce text-entry surfaces such as Email, Post, Log a Call, notes, and similar composer fields.
-- Saves typed content in extension session storage while the browser session is active.
-- Restores the draft when Salesforce rerenders the form, reloads a frame, or the page is refreshed.
-- Clears the local draft after a likely successful Salesforce save/send request.
+| Keep writing | Recover progress | Stay in control |
+| --- | --- | --- |
+| Detected text inputs, textareas, and rich-text composers save as you type. | Drafts restore when the matching Salesforce composer returns. | Review drafts, clear one or all, and customize protection and notifications. |
+| Tab, record, composer, and field identity isolate drafts. | Email saves the authored reply above its existing signature and quoted history. | Extension pages offer System, Light, and Dark appearances. |
 
-## Current behavior
+> [!IMPORTANT]
+> Protection uses Salesforce markup and request heuristics. Verify your org’s Email/Post workflow before relying on recovery. Case Details field enhancements remain in the [GitHub backlog](https://github.com/teezyyoxo/salesforce-draft-guard/issues?q=is%3Aissue%20is%3Aopen%20label%3Aenhancement). Draft Guard is a recovery aid, not a durable backup.
 
-This first version uses heuristics because Salesforce Lightning markup and request flows vary by org and feature:
+<table><tr>
+<td width="33%"><a href="#install"><img src="assets/readme-install.svg" alt="Install Draft Guard"></a></td>
+<td width="33%"><a href="#settings"><img src="assets/readme-customize.svg" alt="Configure protection and appearance"></a></td>
+<td width="33%"><a href="#github-issues"><img src="assets/readme-issues.svg" alt="Browse actual GitHub issue status"></a></td>
+</tr></table>
 
-- It watches `textarea`, text `input`, and `contenteditable` fields that appear related to messages, posts, calls, notes, or descriptions.
-- It derives draft keys from Chrome tab id, the nearest mounted Salesforce record id, structural action type, and stable field semantics. Drafts remain isolated across Cases, browser tabs, and mounted Salesforce console workspace tabs.
-- Every stored draft also carries its verified Salesforce record owner. Restore fails closed when ownership is missing, conflicting, or ambiguous; hidden workspace composers cannot inherit the active ticket URL.
-- It normalizes Email iframe editors against the top Salesforce page context when that context is accessible, so saved and restored Email body keys stay aligned.
-- For Email replies, it treats Salesforce's prefilled signature and quoted conversation as read-only baseline content and saves only the newly authored reply above it. Framework-inserted Email history never creates a draft by itself, and a baseline fingerprint isolates different Reply actions on the same Case.
-- It marks the active composer as pending-clear when the user clicks `Send`, `Share`, `Save`, `Post`, or `Log a Call`.
-- It clears only the draft keys captured from that composer when Salesforce then issues a successful, composer-matching `POST`, `PUT`, or `PATCH` request. Record Details saves do not clear Email or Post drafts.
-- It shows configurable toast notifications for save, restore, and clear events, including position, size, save-confirmation frequency, colors, and optional sound.
+## Install
 
-That is intentionally conservative, but not perfect. Expect some tuning against your specific Salesforce UI.
+**Chrome · Manifest V3 · No build step**
 
-## Load it in Chrome
+1. Download the [main-branch source ZIP](https://github.com/teezyyoxo/salesforce-draft-guard/archive/refs/heads/main.zip), or clone the repository. GitHub access is required while the repository is private; no releases are currently published.
+2. Extract the ZIP into a folder you plan to keep.
+3. Open `chrome://extensions` and turn on **Developer mode**.
+4. Choose **Load unpacked** and select the folder containing `manifest.json`.
+5. Refresh your Salesforce tabs.
 
-1. Open `chrome://extensions`.
-2. Enable `Developer mode`.
-3. Click `Load unpacked`.
-4. Select this folder: `/Users/mgray/GitHub/SFsaver`.
-
-## Suggested Git setup
-
-Initialize and connect the repo:
+<details>
+<summary>Install from source or update an existing installation</summary>
 
 ```bash
-git init
-git checkout -b codex/salesforce-draft-guard
-git add .
-git commit -m "Initial Salesforce Draft Guard extension"
-git remote add origin <your-github-repo-url>
-git push -u origin codex/salesforce-draft-guard
+git clone https://github.com/teezyyoxo/salesforce-draft-guard.git
+cd salesforce-draft-guard
 ```
 
-## Features
+For this checkout, load `/Users/mgray/GitHub/SFsaver`. To update a clean checkout, run `git pull --ff-only`, click the extension’s reload button in `chrome://extensions`, then refresh Salesforce tabs. Review [CHANGELOG.md](CHANGELOG.md) first: upgrading from a pre-0.6.3 build purges old drafts while preserving settings.
 
-- Options page for choosing which Salesforce actions clear drafts, which field keywords should be protected, and how toast notifications appear.
-- Popup panel for reviewing saved drafts in the current browser session and clearing one or all drafts manually.
-- **Clear Drafts / Cache** controls in both the popup and options page cancel pending autosaves and remove all saved drafts without resetting preferences.
+The manifest uses related-frame matching, so use a current Chrome version. Other Chromium browsers may support unpacked installation but have not been validated here.
 
-## Local verification
+</details>
+
+## Everyday use
+
+1. Type in a protected Salesforce composer such as **Email** or **Post**. Saving happens as you edit.
+2. Refresh or return after Salesforce rerenders the composer. The extension attempts recovery only for the matching, verified record/composer context.
+3. Send, Share, Save, Post, or Log a Call normally. A successful matching request clears the related drafts; unrelated record saves do not clear a message draft.
+
+Open the extension toolbar icon to review saved drafts. **Clear** removes one entry; **Clear Drafts / Cache** removes all saved drafts and cancels pending saves in open Salesforce frames. Both preserve settings. The popup reviews text; recovery happens inside Salesforce.
+
+### Demonstration: review saved drafts
+
+<table><tr><th>Light</th><th>Dark</th></tr><tr>
+<td><img src="assets/screenshots/drafts-light.png" alt="Light popup with two sample saved Post and Email drafts, review and clear controls" width="420"></td>
+<td><img src="assets/screenshots/drafts-dark.png" alt="Dark popup with the same sample saved drafts and GitHub and MIT license footer" width="420"></td>
+</tr></table>
+
+## Settings
+
+Choose **Settings** in the popup, or open the extension’s options from `chrome://extensions`.
+
+| Control | What it changes |
+| --- | --- |
+| Protected Actions | Clears related drafts after these enabled actions succeed: Send, Share, Save, Post, Log a Call. |
+| Field Keywords | Matches a field’s own label/attributes; one keyword per line. Defaults cover email, post, call, comment, note, description, body, subject, and message. |
+| Show toasts | Enables/disables save and restore notifications. |
+| Toast Display | Position, text size, save confirmation frequency, text/background colors, and optional sound. |
+| Appearance | **System** by default, or explicit Light/Dark. Shared between popup and settings; does not change Salesforce toasts. |
+| Draft Storage | Clears all drafts and live cache without resetting preferences. |
+| Save Settings / Reset Defaults | Saves protection/notification preferences, or restores those defaults. Appearance is preserved. |
+
+### Demonstration: configure protection
+
+<table><tr><th>Light</th><th>Dark</th></tr><tr>
+<td><img src="assets/screenshots/settings-light.png" alt="Light protection settings with all five actions on one row and static header/footer" width="560"></td>
+<td><img src="assets/screenshots/settings-dark.png" alt="Dark protection settings with appearance selector and persistent Save Settings controls" width="560"></td>
+</tr></table>
+
+<details>
+<summary>Notification controls and draft storage in both themes</summary>
+
+<img src="assets/screenshots/settings-display-light.png" alt="Light settings scrolled to toast display and draft storage controls" width="560">
+<img src="assets/screenshots/settings-display-dark.png" alt="Dark settings scrolled to toast display and draft storage controls" width="560">
+
+</details>
+
+Screenshots capture the actual extension pages in a disposable browser profile. Draft examples are synthetic, with no customer data. They demonstrate the popup and settings; live Salesforce recovery still needs testing in your org. Only the main content scrolls; headers, appearance controls, and footers remain visible. On narrow screens, the action controls wrap.
+
+## GitHub issues
+
+[Open reports](https://github.com/teezyyoxo/salesforce-draft-guard/issues?q=is%3Aissue%20is%3Aopen) · [Closed reports](https://github.com/teezyyoxo/salesforce-draft-guard/issues?q=is%3Aissue%20is%3Aclosed) · [All reports](https://github.com/teezyyoxo/salesforce-draft-guard/issues?q=is%3Aissue)
+
+All 15 historical DG entries now link to actual GitHub reports, including closed resolved reports. The still-occurring intermittent field/container mutation is open as [DG-016 / #16](https://github.com/teezyyoxo/salesforce-draft-guard/issues/16), with no reliable reproduction yet. The hyperlink modal layout observation is tracked as [DG-017 / #17](https://github.com/teezyyoxo/salesforce-draft-guard/issues/17); cause and reproduction remain unconfirmed.
+
+## Privacy and permissions
+
+- **Storage:** draft text stays in extension session storage where available, with local storage as a fallback. Session drafts are not a durable browser-restart backup. Settings use Chrome sync storage when available; appearance uses local storage.
+- **Salesforce host access:** content scripts run on the Salesforce and Visualforce domains listed in `manifest.json`, including matching frames, to detect editors and recover text. The page bridge observes successful write requests for cleanup.
+- **No telemetry or external draft service:** draft text is not sent to an extension backend. Salesforce still receives content through its normal Save/Send actions.
+- **No clipboard or cookie permission:** the only general permission is `storage`.
+- Drafts can contain sensitive text. Use the clear controls when needed. GitHub links open only when selected; extension pages load their assets locally.
+
+See [draft identity, recovery, Email boundaries, and cleanup details](docs/DRAFT_BEHAVIOR.md).
+
+## Troubleshooting
+
+| Symptom | Try this |
+| --- | --- |
+| Nothing saves or restores | Reload the extension and refresh Salesforce. Confirm the field’s own label matches a keyword and the record context is unambiguous. |
+| Draft does not reappear | Open the original Case and composer in the same browser tab. Hidden or ambiguous composers defer or reject recovery for isolation. |
+| Formatting, focus, or layout looks wrong | Record a sanitized reproduction, browser/extension versions, and editor variant. Compare with Draft Guard disabled and consult [GitHub issues](https://github.com/teezyyoxo/salesforce-draft-guard/issues). |
+| Draft remains after Send/Share | Confirm the action is enabled. Cleanup requires a successful request matching the submitted composer. Clear manually if needed. |
+
+Enable debug logging only when investigating; [instructions](docs/DRAFT_BEHAVIOR.md#debug-logging) explain how. Remove sensitive draft/record details from logs before sharing.
+
+## Contributing
+
+No package installation or build is needed for the extension. Run its checks with Node.js:
 
 ```bash
 node --check content.js
 node --check injected.js
 node --check options.js
 node --check popup.js
+node --check theme.js
 node --check draft-storage.js
 node --check background.js
 node --test
 ```
 
-## Debug logging
+With Playwright and its Chromium browser installed (`npm install --no-save --package-lock=false playwright` then `npx playwright install chromium`), `node scripts/capture-ui.cjs` verifies the extension pages and regenerates screenshots using a disposable profile. See [CHANGELOG.md](CHANGELOG.md) and [the manual verification checklist](docs/DRAFT_BEHAVIOR.md#manual-verification).
 
-`content.js` ships with `DEBUG_ENABLED = false` so the DevTools console stays clean during
-normal use (genuine failures are still reported via `console.error`). To investigate draft
-save/restore behavior, set `DEBUG_ENABLED = true` at the top of `content.js`, reload the
-extension, and watch for `[SFDG]` messages (draft keys, save/restore paths, iframe binding).
+Related project: [CasePaste](https://github.com/teezyyoxo/CasePaste) adds image-paste handling to Salesforce Case posts.
 
-## Known Issues & Roadmap
-
-Use this section as a lightweight backlog until we move to GitHub Issues/Projects.
-
-### Priority scale
-
-- P0: Data loss or core flow broken.
-- P1: Major UX issue; workaround exists.
-- P2: Minor bug, consistency issue, or polish.
-
-### Open issues
-
-| ID | Priority | Area | Status | Observed behavior | Repro notes | Next plan |
-| --- | --- | --- | --- | --- | --- | --- |
-| DG-001 | P1 | Post restore | Resolved in 0.2.3 (2026-04-29) | Restored drafts in the Post box included extra line breaks that were not in the original draft. | Covered by contenteditable normalization regression test. | Re-verify manually in Salesforce Post composer and watch for rich-text edge cases. |
-| DG-002 | P0 | Email restore | Resolved in 0.3.2 (2026-06-04) | Email drafts saved but never restored. Root cause: the CKEditor Email body exposes per-load identifiers (instance ids, generated title/aria-label) that changed every page load, so the save-time key did not match the restore-time key. | Fixed with a canonical Email key (record context + fixed field id); covered by a regression test asserting key identity across CKEditor instance ids. | Re-verify manually in the Salesforce Email tab and confirm Send clears the Email body draft. |
-| DG-003 | P1 | Save toast UI | Resolved in 0.2.4 (2026-04-29) | "Draft saved locally" toast placement was inconsistent and styling was fixed. | Added settings controls for toast position, size, colors, and optional sound effect. | Re-verify manually in Salesforce Post and Email composers with several toast positions and sizes. |
-| DG-004 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Plan of Action > What`. | Validate field detection in Case Details context and capture stable keying signals. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
-| DG-005 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Internal Resolution Summary`. | Confirm this field’s DOM lifecycle and whether Salesforce rerenders on status transitions. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
-| DG-006 | P1 | Case Details drafting | Planned | Add draft save/restore support for `Case Details > Closure Information > Resolution Summary`. | Confirm selector stability across Lightning record layouts/org variants. | Implement field targeting + restore handling, then add regression coverage for this specific field path. |
-| DG-007 | P1 | Draft restore | Resolved in 0.3.0 (2026-06-04) | Restored drafts had extraneous/compounded line breaks not in the original draft. | Root cause was a feedback loop: a direct DOM rebuild was re-normalized by Quill/CKEditor, then re-saved by the editor observer. Fixed by routing restores through the editor's input handling and adding a restore guard; covered by an idempotent round-trip regression test. | Re-verify manually in the Salesforce Post and Email composers for exact line-break preservation. |
-| DG-008 | P1 | Draft restore | In progress (0.3.2, 2026-06-04) | Formatted text (bold, italic) and line breaks did not restore. A direct innerHTML write was dropped by Quill/CKEditor (they reconcile against their own model). | Saves capture sanitized HTML; restore now injects via a synthetic paste (text/html + text/plain) so the editor's clipboard pipeline preserves formatting and breaks, with a verified DOM-write fallback. | Re-verify manually in Post and Email that bold/italic/links and line breaks restore, and that Send/Post submits the restored content. If formatting still drops, capture the `[SFDG]` console logs (restore path + html length). |
-| DG-009 | P2 | Toast UI | Planned | Place the save/restore toast closer to the composer — ideally embedded to the left of the "Share"/"Send" button rather than floating at a screen corner. | Toast position is configurable today via the extension's options page (not `chrome://extensions`), but only to fixed screen anchors. | Add an "anchored to composer" toast mode that positions relative to the active composer's action bar. |
-| DG-010 | P1 | Draft restore | Open | After a restored draft, backspace/delete appeared to do nothing (could only add text). | Resolved in 0.3.1 by restoring at most once per editor element and only into empty fields; tracked here for manual re-verification. | Re-verify in Post and Email that deleting/backspacing through restored content works normally. |
-| DG-011 | P1 | Draft restore | Resolved in 0.3.3 (2026-06-04) | A saved Post draft did not restore if the Email tab was opened before Post after a refresh. | The Post composer is hidden when Email is active; restoring into a hidden editor failed but the element was marked handled. Restore now defers while a field is not rendered and retries on focus/re-scan. | Re-verify: save a Post draft, refresh, open Email, then return to Post and confirm the draft restores. |
-| DG-012 | P1 | Email composer | Open (testing) | End-to-end Email box behavior is not yet fully verified in a live org. | Canonical Email key (0.3.2), rich-text restore (0.3.2), and deferred-restore (0.3.3) all land but Email has not had a full manual pass. | Verify: type a formatted, multi-line Email draft, refresh, confirm restore (formatting + breaks), confirm Send clears the draft, and confirm Send submits the restored body (not stale/empty). Capture `[SFDG]` logs if anything fails. |
-| DG-013 | P0 | Draft cleanup/isolation | Resolved in 0.6.0 (2026-08-13) | Sent/saved Email, Post, and Note drafts could be recreated by late editor activity; Lightning DOM reuse could also restore a ticket 0001 draft on ticket 0004. | Fixed with Chrome-tab + nearest-record + composer + field identity, authoritative cross-frame clear tombstones, per-scope restore guards, Aura request-body action detection, and a one-time draft-schema purge. Mounted Salesforce console workspace tabs and Email iframes resolve their owning record locally. Settings are preserved. Covered by automated regression tests. | Re-enable only after manually verifying Send/Share/Save cleanup and isolation across Cases, Chrome tabs, and Salesforce workspace tabs in the target org. |
-| DG-014 | P1 | Long-ticket layout/focus | Resolved in 0.6.1 (2026-08-13) | Long tickets could gain an extremely tall blank workspace/background region; after scrolling away, any keypress snapped the page back to the restored composer. The 0.6.0 scroller repair did not address the focus/selection trigger. | Synthetic-paste recovery now restores prior focus or blurs the editor, never recreates a background selection, resets only editor-local viewports, and never mutates the top Salesforce document scroller. Covered by focus-release, selection, and viewport-isolation tests. | Re-verify on a long ticket: restore a Post/Email draft, scroll above it, press ordinary keys, and confirm the page neither jumps nor gains blank height without using browser zoom. |
-| DG-015 | P0 | Ticket/Email isolation | Resolved in 0.6.3 (2026-08-14) | Drafts from one Case could appear in another, and Email autosave could capture and later restore the entire quoted conversation. | Added independently verified record ownership, fail-closed handling for ambiguous/hidden workspace composers, authored-reply-only Email capture, safe prepend restore, and a schema-3 purge of all older drafts. Covered by cross-ticket, owner-mismatch, quoted-chain, framework-mutation, editor-reuse, and migration tests. | Before normal use, reload the unpacked extension so the schema migration runs. Re-verify with two simultaneously mounted Cases and Email replies containing long quoted histories. |
-
-### DG-003 toast display options
-
-- Position: `upper-right`, `upper-left`, `lower-left`, `lower-right` (default), `lower-middle`, `absolute-middle`, or `upper-middle`.
-- Text size: Small, Medium (default), Large, or Extra Large.
-- Save confirmation frequency: Once per typing burst (default), once per draft, or every save.
-- Colors: user-selectable text and background colors.
-- Sound effect: None (default), Soft chime, Click, or Success tone.
-
-### Next investigation pass
-
-1. Manually smoke-test DG-002, DG-007, DG-008, and DG-010 in Salesforce against version 0.4.0:
-   in the Post and Email composers, type multi-line and formatted (bold/italic) text, refresh
-   or re-render, and confirm an exact restore — including formatting and line breaks, with no
-   extra blank lines — then confirm you can freely backspace/delete the restored content, and
-   that Send/Post clears the draft and submits the restored content (not stale/empty content).
-2. Confirm a background Salesforce request (list refresh, navigation) does not clear an unsent
-   draft now that the network relevance filter is narrower.
-3. Capture any remaining Salesforce-specific CKEditor or Post composer edge cases as fresh roadmap rows.
-4. Add coverage for DG-004, DG-005, and DG-006 field detection before implementing Case Details drafting.
-5. DG-009: prototype a composer-anchored toast mode positioned near the action bar.
-
-### Definition of done (per issue)
-
-- Repro documented.
-- Root cause identified (or enhancement scope documented).
-- Automated test added/updated where applicable.
-- Fix/enhancement merged.
-- README row updated to `Resolved` with date and a short note.
+[MIT licensed](LICENSE). Independent community project; not affiliated with or endorsed by Salesforce. Former checkout/repository name: SFsaver. The product name is **Salesforce Draft Guard**.

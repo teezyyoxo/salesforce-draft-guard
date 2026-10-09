@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc"><title id="title">Salesforce Draft Guard</title><desc id="desc">Blue banner with protected draft illustration: write, save locally, and recover progress.</desc><g font-family="system-ui, -apple-system, Segoe UI, Arial, sans-serif"><defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#032d60"/><stop offset="1" stop-color="#014486"/></linearGradient></defs>
+<rect width="1200" height="420" rx="18" fill="url(#bg)"/>
+<circle cx="1150" cy="10" r="290" fill="#0176d3" opacity=".3"/><circle cx="940" cy="440" r="230" fill="#78b9ff" opacity=".08"/>
+<rect x="44" y="42" width="197" height="28" rx="14" fill="#fff" opacity=".12"/><text x="60" y="61" fill="#d8edff" font-size="12" font-weight="600" letter-spacing="1.5">YOUR WORK, PROTECTED</text>
+<text x="44" y="142" fill="#fff" font-size="43" font-weight="700">Salesforce Draft Guard</text>
+<text x="44" y="194" fill="#fff" font-size="26">Keep your place.</text><text x="44" y="233" fill="#fff" font-size="26">Protect your progress.</text>
+<text x="44" y="277" fill="#b9ddff" font-size="17">Draft recovery for the Lightning workday.</text>
+<rect x="44" y="318" width="177" height="44" rx="6" fill="#fff"/><text x="64" y="346" fill="#014486" font-size="15" font-weight="600">Install Draft Guard →</text>
+<text x="240" y="346" fill="#b9ddff" font-size="13">Local drafts · No build step</text>
+<rect x="700" y="52" width="444" height="312" rx="12" fill="#f3f5f8" stroke="#78b9ff"/>
+<path d="M712 52h420a12 12 0 0 1 12 12v47H700V64a12 12 0 0 1 12-12" fill="#fff"/>
+<circle cx="723" cy="80" r="5" fill="#0176d3"/><text x="740" y="85" fill="#032d60" font-size="16" font-weight="600">Your next great reply</text>
+<rect x="721" y="129" width="402" height="153" rx="6" fill="#fff" stroke="#c9d2dd"/>
+<text x="741" y="158" fill="#526172" font-size="12">EMAIL DRAFT</text><text x="741" y="193" fill="#181818" font-size="16">Hi Alex,</text>
+<rect x="741" y="212" width="290" height="7" rx="3" fill="#c9d2dd"/><rect x="741" y="232" width="252" height="7" rx="3" fill="#c9d2dd"/><rect x="741" y="252" width="171" height="7" rx="3" fill="#c9d2dd"/>
+<rect x="721" y="302" width="402" height="41" rx="6" fill="#eef4ff"/><text x="741" y="328" fill="#014486" font-size="14" font-weight="600">✓ Progress saved in extension storage</text>
+<path d="m1086 212 58 20v44c0 34-33 59-58 70-25-11-58-36-58-70v-44Z" fill="#0176d3" stroke="#fff" stroke-width="5"/><path d="m1061 273 18 18 33-40" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</g></svg>

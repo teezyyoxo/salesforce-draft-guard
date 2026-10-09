@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
-## [Unreleased]
+## [0.6.3] - 2026-10-09
+
+First packaged GitHub release of 0.6.3. Includes the isolation hotfix developed on August 14, 2026, plus the Salesforce-style extension pages, icons, license, and documentation completed on October 9, 2026.
 
 ### Added
 - MIT license for Salesforce Draft Guard.
@@ -13,16 +15,7 @@ The format is based on Keep a Changelog and this project uses Semantic Versionin
 - Genuine extension-page screenshots, Salesforce-style README hero/workflow/navigation graphics, and a reproducible browser capture/check script.
 - README GitHub issue snapshot and status badge with an update script that includes closed reports.
 - Imported DG-001–DG-015 into actual GitHub reports, including closed historical resolutions. Filed the ongoing intermittent field/container mutation as DG-016 and the hyperlink modal observation as DG-017; reproduction and attribution limits are recorded in their reports.
-
-### Changed
-- Restyled popup and options page with Lightning-inspired blue accents, system fonts, and static header/footer surrounding a scrolling main area. Protected Actions share one desktop row.
-- Salesforce toast styles, defaults, and runtime behavior are unchanged.
-- Refreshed installation, usage, privacy, and contributor documentation; standardized Salesforce Draft Guard branding and canonical repository URLs. Preserved draft behavior and manual verification guidance.
-- Replaced local issue tracking with direct GitHub links and a synced README issue table.
-
-## [0.6.3] - 2026-08-14
-
-Emergency isolation hotfix for cross-ticket draft restoration and Email history capture.
+- Runtime-only unpacked extension ZIP and deterministic packaging script.
 
 ### Fixed
 - Drafts now include their verified, unhashed Salesforce record owner, and restore rejects and
@@ -48,6 +41,11 @@ Emergency isolation hotfix for cross-ticket draft restoration and Email history 
   Email history. Extension settings are preserved.
 
 ### Changed
+- Restyled popup and options page with Lightning-inspired blue accents, system fonts, and static header/footer surrounding a scrolling main area. Protected Actions share one desktop row.
+- Salesforce toast styles, defaults, and runtime behavior are unchanged.
+- Refreshed installation, usage, privacy, and contributor documentation; standardized Salesforce Draft Guard branding and canonical repository URLs. Preserved draft behavior and manual verification guidance.
+- Replaced local issue tracking with direct GitHub links and a synced README issue table.
+- Release installation and setup instructions now cover the packaged ZIP.
 - Bumped the extension version to 0.6.3.
 
 ## [0.6.2] - 2026-08-14

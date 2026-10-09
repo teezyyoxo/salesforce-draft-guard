@@ -30,25 +30,42 @@ Protect Salesforce Lightning Email, Post, and other detected activity drafts fro
 
 ## Install
 
-**Chrome · Manifest V3 · No build step**
+**Current Chrome · Manifest V3 · No build step**
 
-1. Download the [main-branch source ZIP](https://github.com/teezyyoxo/salesforce-draft-guard/archive/refs/heads/main.zip), or clone the repository. GitHub access is required while the repository is private; no releases are currently published.
-2. Extract the ZIP into a folder you plan to keep.
+1. Open the [0.6.3 release](https://github.com/teezyyoxo/salesforce-draft-guard/releases/tag/v0.6.3) and download **[Salesforce-Draft-Guard-v0.6.3.zip](https://github.com/teezyyoxo/salesforce-draft-guard/releases/download/v0.6.3/Salesforce-Draft-Guard-v0.6.3.zip)** under **Assets**. Choose this extension ZIP rather than GitHub’s automatically generated source archives. GitHub access is required while the repository is private.
+2. Extract the ZIP into a permanent folder, such as `Salesforce-Draft-Guard`. The extracted folder must contain `manifest.json` directly.
 3. Open `chrome://extensions` and turn on **Developer mode**.
-4. Choose **Load unpacked** and select the folder containing `manifest.json`.
-5. Refresh your Salesforce tabs.
+4. Choose **Load unpacked** and select that extracted folder—not the ZIP file. Chrome needs the folder to stay in place.
+5. Open Chrome’s Extensions menu and pin **Salesforce Draft Guard** for quick access to saved drafts.
+6. Refresh your open Salesforce tabs.
+
+The download contains only the extension runtime and MIT license notice. No npm installation, build, or Salesforce API login is needed. See [Chrome’s unpacked-extension instructions](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked) for the browser steps. Other Chromium browsers have not been validated here.
+
+### First-time setup
+
+1. Open the toolbar popup and choose **Settings**.
+2. Review **Protected Actions** and **Field Keywords**. The default actions control cleanup after Send, Share, Save, Post, and Log a Call succeed; keywords identify fields eligible for protection.
+3. Keep **System** appearance or choose Light/Dark. Adjust notification preferences if desired, then use **Save Settings** to save protection/notification changes. Appearance changes save immediately.
+4. In your org, type a harmless test draft in a supported Post or Email composer, refresh, and return to the same Case and composer in the same Chrome tab. Confirm recovery in your org, then clear the test draft from the popup.
+
+### Update an existing installation
+
+Save or copy important unsent text first. Download the new extension ZIP, replace the files in your **existing unpacked folder**, click the extension’s reload button in `chrome://extensions`, and refresh Salesforce tabs. Keeping the same folder retains the existing unpacked installation; loading a different folder can create a separate installation with separate preferences.
+
+> [!IMPORTANT]
+> Updating from a version older than **0.6.3** purges older saved drafts because their record ownership cannot be verified and they may include quoted Email history. Settings are preserved. Already-current schema-3 reloads do not trigger that purge. Review [CHANGELOG.md](CHANGELOG.md) before updating.
 
 <details>
-<summary>Install from source or update an existing installation</summary>
+<summary>Install from source</summary>
 
 ```bash
 git clone https://github.com/teezyyoxo/salesforce-draft-guard.git
 cd salesforce-draft-guard
 ```
 
-For this checkout, load `/Users/mgray/GitHub/SFsaver`. To update a clean checkout, run `git pull --ff-only`, click the extension’s reload button in `chrome://extensions`, then refresh Salesforce tabs. Review [CHANGELOG.md](CHANGELOG.md) first: upgrading from a pre-0.6.3 build purges old drafts while preserving settings.
+Load the cloned folder containing `manifest.json` using **Load unpacked**, then refresh Salesforce. For this checkout, the source folder is `/Users/mgray/GitHub/SFsaver`. To update a clean source checkout, run `git pull --ff-only`, reload the extension, and refresh Salesforce tabs.
 
-The manifest uses related-frame matching, so use a current Chrome version. Other Chromium browsers may support unpacked installation but have not been validated here.
+The repository keeps regression tests and development tools for contributors; these are excluded from the release ZIP.
 
 </details>
 
@@ -151,7 +168,7 @@ Enable debug logging only when investigating; [instructions](docs/DRAFT_BEHAVIOR
 
 ## Contributing
 
-No package installation or build is needed for the extension. Run its checks with Node.js:
+No package installation or build is needed for the extension. Keep `test/` and the root `*.test.js` files in the repository: they check draft recovery, isolation, and cleanup. They are excluded from the release ZIP. Run the checks with Node.js:
 
 ```bash
 node --check content.js
@@ -165,6 +182,8 @@ node --test
 ```
 
 With Playwright and its Chromium browser installed (`npm install --no-save --package-lock=false playwright` then `npx playwright install chromium`), `node scripts/capture-ui.cjs` verifies the extension pages and regenerates screenshots using a disposable profile. `node scripts/sync-issues.cjs` uses authenticated `gh` access to refresh issue status. See [CHANGELOG.md](CHANGELOG.md) and [the manual verification checklist](docs/DRAFT_BEHAVIOR.md#manual-verification).
+
+To rebuild the extension-only release ZIP and SHA-256 file, run `python3 scripts/package-release.py`. Release notes and packaged artifacts live in `releases/v0.6.3/`.
 
 Related project: [CasePaste](https://github.com/teezyyoxo/CasePaste) adds image-paste handling to Salesforce Case posts.
 

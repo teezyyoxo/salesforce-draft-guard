@@ -4,15 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Salesforce Draft Guard Options</title>
+    <link rel="stylesheet" href="ui.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <main class="page">
-      <header class="hero">
+    <div class="page">
+      <header class="hero"><div class="header-inner">
+        <div class="brand"><img class="brand-icon" src="assets/icon.svg" alt="" /><div>
         <p class="eyebrow">Salesforce Draft Guard</p>
         <h1>Protection Settings</h1>
-        <p class="lede">Choose which composer actions trigger cleanup and which field keywords should be treated as recoverable drafts.</p>
+        </div></div><label class="theme-control"><span class="sr-only">Appearance</span><select id="themeToggle" class="theme-toggle" aria-label="Appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div>
       </header>
+      <main class="settings-content" aria-label="Protection settings"><div class="content-inner">
+      <p class="lede">Keep your progress safe when Salesforce refreshes. Set up draft protection below.</p>
 
       <section class="panel">
         <h2>Protected Actions</h2>
@@ -105,13 +109,15 @@
         </div>
       </section>
 
-      <footer class="footer">
+      </div></main>
+      <footer class="site-footer"><div class="footer-inner"><div class="footer-links"><a href="https://github.com/teezyyoxo/salesforce-draft-guard" target="_blank" rel="noopener noreferrer">GitHub ↗</a><a href="https://github.com/teezyyoxo/salesforce-draft-guard/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a></div><div class="footer">
         <button id="reset" class="button button-secondary" type="button">Reset Defaults</button>
         <button id="save" class="button" type="button">Save Settings</button>
         <p id="status" class="status" aria-live="polite"></p>
-      </footer>
-    </main>
+      </div></div></footer>
+    </div>
 
+    <script src="theme.js"></script>
     <script src="draft-storage.js"></script>
     <script src="options.js"></script>
   </body>

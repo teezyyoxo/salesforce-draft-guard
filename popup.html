@@ -4,28 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Salesforce Draft Guard</title>
+    <link rel="stylesheet" href="ui.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <main class="popup">
+    <div class="popup">
       <header class="popup-header">
-        <div>
+        <div class="brand">
+          <img class="brand-icon" src="assets/icon.svg" alt="" /><div>
           <p class="eyebrow">Salesforce Draft Guard</p>
           <h1>Saved Drafts</h1>
-        </div>
-        <button id="openOptions" class="link-button" type="button">Options</button>
+        </div></div>
+        <label class="theme-control"><span class="sr-only">Appearance</span><select id="themeToggle" class="theme-toggle" aria-label="Appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
       </header>
 
+      <main class="popup-content" aria-label="Saved drafts">
       <section class="toolbar">
         <button id="refresh" class="button button-secondary" type="button">Refresh</button>
         <button id="clearAll" class="button" type="button">Clear Drafts / Cache</button>
+      <button id="openOptions" class="link-button" type="button">Settings</button>
       </section>
 
       <p id="summary" class="summary"></p>
       <p id="status" class="status" role="status" aria-live="polite"></p>
       <section id="drafts" class="drafts" aria-live="polite"></section>
     </main>
+      <footer class="site-footer"><div class="footer-links"><a href="https://github.com/teezyyoxo/salesforce-draft-guard" target="_blank" rel="noopener noreferrer">GitHub ↗</a><a href="https://github.com/teezyyoxo/salesforce-draft-guard/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a></div></footer>
+    </div>
 
+    <script src="theme.js"></script>
     <script src="draft-storage.js"></script>
     <script src="popup.js"></script>
   </body>

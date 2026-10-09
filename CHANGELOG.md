@@ -9,6 +9,11 @@ The format is based on Keep a Changelog and this project uses Semantic Versionin
 ### Added
 - MIT license for Salesforce Draft Guard.
 - Draft-and-shield icons for the extension list and toolbar.
+- System (default), Light, and Dark appearance controls shared between the popup and options page.
+
+### Changed
+- Restyled popup and options page with Lightning-inspired blue accents, system fonts, and static header/footer surrounding a scrolling main area. Protected Actions share one desktop row.
+- Salesforce toast styles, defaults, and runtime behavior are unchanged.
 
 ## [0.6.3] - 2026-08-14
 

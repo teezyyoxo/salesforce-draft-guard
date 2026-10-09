@@ -5,6 +5,7 @@
   <img src="https://img.shields.io/badge/version-0.6.3-0176d3" alt="Extension version 0.6.3">
   <img src="https://img.shields.io/badge/browser-Chrome-0176d3" alt="Chrome extension">
   <img src="https://img.shields.io/badge/Manifest-v3-032d60" alt="Manifest V3">
+  <a href="#github-issues"><img src="assets/issues-status.svg" alt="GitHub issue snapshot; see the table for checked date"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2e844a" alt="MIT license"></a>
 </p>
 <p align="center"><a href="#install">Install</a> · <a href="#everyday-use">Use it</a> · <a href="#settings">Settings</a> · <a href="#github-issues">Issues</a> · <a href="#privacy-and-permissions">Privacy</a> · <a href="#contributing">Contribute</a></p>
@@ -101,7 +102,31 @@ Screenshots capture the actual extension pages in a disposable browser profile. 
 
 [Open reports](https://github.com/teezyyoxo/salesforce-draft-guard/issues?q=is%3Aissue%20is%3Aopen) · [Closed reports](https://github.com/teezyyoxo/salesforce-draft-guard/issues?q=is%3Aissue%20is%3Aclosed) · [All reports](https://github.com/teezyyoxo/salesforce-draft-guard/issues?q=is%3Aissue)
 
-All 15 historical DG entries now link to actual GitHub reports, including closed resolved reports. The still-occurring intermittent field/container mutation is open as [DG-016 / #16](https://github.com/teezyyoxo/salesforce-draft-guard/issues/16), with no reliable reproduction yet. The hyperlink modal layout observation is tracked as [DG-017 / #17](https://github.com/teezyyoxo/salesforce-draft-guard/issues/17); cause and reproduction remain unconfirmed.
+<!-- github-issues:start -->
+Snapshot checked 2026-10-09. **9 open · 8 closed.**
+
+| GitHub report | Status | Labels |
+| --- | --- | --- |
+| [#1 DG-001: Post recovery adds extra line breaks](https://github.com/teezyyoxo/salesforce-draft-guard/issues/1) | **Closed** | bug, P1, historical-backlog |
+| [#2 DG-002: Email drafts save but do not restore](https://github.com/teezyyoxo/salesforce-draft-guard/issues/2) | **Closed** | bug, P0, historical-backlog |
+| [#3 DG-003: Save toast placement and appearance need configuration](https://github.com/teezyyoxo/salesforce-draft-guard/issues/3) | **Closed** | bug, P1, historical-backlog |
+| [#4 DG-004: Protect Case Details: Plan of Action &gt; What](https://github.com/teezyyoxo/salesforce-draft-guard/issues/4) | **Open** | enhancement, P1, historical-backlog |
+| [#5 DG-005: Protect Case Details: Internal Resolution Summary](https://github.com/teezyyoxo/salesforce-draft-guard/issues/5) | **Open** | enhancement, P1, historical-backlog |
+| [#6 DG-006: Protect Case Details: Resolution Summary](https://github.com/teezyyoxo/salesforce-draft-guard/issues/6) | **Open** | enhancement, P1, historical-backlog |
+| [#7 DG-007: Repeated recovery compounds line breaks](https://github.com/teezyyoxo/salesforce-draft-guard/issues/7) | **Closed** | bug, P1, historical-backlog |
+| [#8 DG-008: Verify rich-text formatting and line-break recovery](https://github.com/teezyyoxo/salesforce-draft-guard/issues/8) | **Open** | P1, historical-backlog, verification |
+| [#9 DG-009: Add a composer-anchored toast position](https://github.com/teezyyoxo/salesforce-draft-guard/issues/9) | **Open** | enhancement, P2, historical-backlog |
+| [#10 DG-010: Re-verify backspace and delete after draft recovery](https://github.com/teezyyoxo/salesforce-draft-guard/issues/10) | **Open** | P1, historical-backlog, verification |
+| [#11 DG-011: Post draft fails to restore after opening Email first](https://github.com/teezyyoxo/salesforce-draft-guard/issues/11) | **Closed** | bug, P1, historical-backlog |
+| [#12 DG-012: Complete live-org Email composer verification](https://github.com/teezyyoxo/salesforce-draft-guard/issues/12) | **Open** | P1, historical-backlog, verification |
+| [#13 DG-013: Sent drafts reappear and reused composers mix Case drafts](https://github.com/teezyyoxo/salesforce-draft-guard/issues/13) | **Closed** | bug, P0, historical-backlog |
+| [#14 DG-014: Long tickets gain blank height and recovery steals focus](https://github.com/teezyyoxo/salesforce-draft-guard/issues/14) | **Closed** | bug, P1, historical-backlog |
+| [#15 DG-015: Cross-Case recovery and quoted Email history capture](https://github.com/teezyyoxo/salesforce-draft-guard/issues/15) | **Closed** | bug, P0, historical-backlog |
+| [#16 DG-016: Intermittent text field / composer container mutation](https://github.com/teezyyoxo/salesforce-draft-guard/issues/16) | **Open** | bug, known-issue, needs-reproduction |
+| [#17 DG-017: Hyperlink modal layout interference](https://github.com/teezyyoxo/salesforce-draft-guard/issues/17) | **Open** | bug, known-issue, needs-reproduction |
+<!-- github-issues:end -->
+
+The table is generated from actual repository issues and includes closed reports, marked **Closed**. Refresh it with `node scripts/sync-issues.cjs`. All 15 historical DG entries now link to actual GitHub reports, including closed resolved reports. The still-occurring intermittent field/container mutation is open as [DG-016 / #16](https://github.com/teezyyoxo/salesforce-draft-guard/issues/16), with no reliable reproduction yet. The hyperlink modal layout observation is tracked as [DG-017 / #17](https://github.com/teezyyoxo/salesforce-draft-guard/issues/17); cause and reproduction remain unconfirmed.
 
 ## Privacy and permissions
 
@@ -139,7 +164,7 @@ node --check background.js
 node --test
 ```
 
-With Playwright and its Chromium browser installed (`npm install --no-save --package-lock=false playwright` then `npx playwright install chromium`), `node scripts/capture-ui.cjs` verifies the extension pages and regenerates screenshots using a disposable profile. See [CHANGELOG.md](CHANGELOG.md) and [the manual verification checklist](docs/DRAFT_BEHAVIOR.md#manual-verification).
+With Playwright and its Chromium browser installed (`npm install --no-save --package-lock=false playwright` then `npx playwright install chromium`), `node scripts/capture-ui.cjs` verifies the extension pages and regenerates screenshots using a disposable profile. `node scripts/sync-issues.cjs` uses authenticated `gh` access to refresh issue status. See [CHANGELOG.md](CHANGELOG.md) and [the manual verification checklist](docs/DRAFT_BEHAVIOR.md#manual-verification).
 
 Related project: [CasePaste](https://github.com/teezyyoxo/CasePaste) adds image-paste handling to Salesforce Case posts.
 

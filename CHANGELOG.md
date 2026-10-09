@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- MIT license for Salesforce Draft Guard.
+
 ## [0.6.3] - 2026-08-14
 
 Emergency isolation hotfix for cross-ticket draft restoration and Email history capture.

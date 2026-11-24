@@ -75,6 +75,30 @@ const assert = require('node:assert/strict');
     await popup.waitForFunction(() => document.querySelectorAll('.draft-card').length === 1);
     await popup.locator('#clearAll').click();
     await popup.waitForFunction(() => !!document.querySelector('.empty-state'));
+    const richText = '<p><strong>Bold</strong> <em>italic</em> <u>underline</u> <s>strike</s></p>\n' +
+      '<p>Next line</p><p><br></p><ol><li data-list="ordered">First</li>' +
+      '<li data-list="bullet">Bullet</li><li data-list="ordered">Second</li></ol>' +
+      '<pre title="2 > 1">\n  first\n    second\n</pre><p>' + 'Long draft '.repeat(30) + 'End.</p>' +
+      '<a href="/lightning/page/home">Salesforce link</a>' +
+      '<a href="javascript:void(0)">Unsafe link</a>' +
+      '<img src="https://example.invalid/image.png"><iframe src="https://example.invalid/"></iframe>';
+    await popup.evaluate(html => chrome.storage.session.set({
+      'sfdg:draft:demo-rich': { actionType: 'post', value: 'Wrong\n\nspacing', html, url: 'https://example.salesforce.com/' }
+    }), richText);
+    await popup.locator('#refresh').click();
+    const richPreview = popup.locator('.draft-preview-rich');
+    await richPreview.waitFor();
+    assert.equal(await richPreview.locator('strong, em, u, s').count(), 4);
+    assert.equal(await richPreview.locator('iframe, [src]').count(), 0);
+    assert.equal(await richPreview.getByRole('link', { name: 'Salesforce link' }).getAttribute('href'),
+      'https://example.salesforce.com/lightning/page/home');
+    assert.equal(await richPreview.getByText('Unsafe link').getAttribute('href'), null);
+    assert.equal(await richPreview.locator('pre').textContent(), '\n  first\n    second\n');
+    assert.deepEqual(await richPreview.locator('li').evaluateAll(items => items.map(item => [item.value, getComputedStyle(item).listStyleType])),
+      [[1, 'decimal'], [0, 'disc'], [2, 'decimal']]);
+    assert.match(await richPreview.textContent(), /End\./);
+    assert.equal(await richPreview.locator('p').evaluateAll(([first, second, blank]) =>
+      second.offsetTop === first.offsetTop + first.offsetHeight && blank.offsetHeight === second.offsetHeight), true);
     assert.equal(await popup.evaluate(async () => (await chrome.storage.local.get('sfdg:ui-theme'))['sfdg:ui-theme']), 'light');
     await options.locator('#themeToggle').selectOption('system');
     await popup.waitForFunction(() => document.querySelector('#themeToggle').value === 'system');
@@ -82,7 +106,7 @@ const assert = require('node:assert/strict');
     assert.equal(await options.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await options.screenshot({ path: path.join(root, 'assets/screenshots/settings-mobile.png') });
     assert.deepEqual(errors, [], 'No extension page errors');
-    console.log('Verified themes, shared preference, sticky chrome, settings persistence/reset, draft clearing, desktop actions, mobile layout; captured seven screenshots.');
+    console.log('Verified themes, shared preference, sticky chrome, settings persistence/reset, draft clearing, rich-text preview, desktop actions, and mobile layout. Captured seven screenshots.');
   } finally {
     await context.close();
     await rm(profile, {recursive:true, force:true});

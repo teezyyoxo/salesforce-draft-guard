@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project uses Semantic Versioning.
 
+## [0.6.4] - 2026-11-24
+
+### Added
+
+- Enabled Chrome's native refresh confirmation by default on Salesforce pages after user interaction. It covers Cmd+R, Ctrl+R, and the browser's Reload button and can also appear when closing the tab or navigating away. The Settings toggle applies to open Salesforce tabs.
+- Saves and restores inline images and hyperlinks in Post and Email drafts, including image-only drafts. Images inserted from Case Files, through Salesforce's inline uploader, or through CasePaste retain their position and Salesforce file references. The flyout shows embedded images and supported Salesforce file images and opens hyperlinks when selected.
+
+### Fixed
+
+- The saved-draft flyout renders the full rich-text draft from its markup, avoiding extra blank lines introduced by flattened text. Recovery preserves paragraph and line breaks, lists, code blocks, and inline formatting without reinterpreting the saved markup as a paste.
+- A delayed restore rechecks the live composer after reading storage, so new typing, a Case switch, a draft clear, or another completed restore takes precedence.
+- Page-exit autosave flushes pending draft snapshots with their original record identity, even when Salesforce has already reset or detached the editor.
+- Opening a different Email conversation on the same Case leaves the saved reply available for its original conversation.
+- Storage removal notifications no longer undo a manual clear's ability to accept the next genuine edit.
+
 ## [0.6.3] - 2026-10-09
 
 First packaged GitHub release of 0.6.3. Includes the isolation hotfix developed on August 14, 2026, plus the Salesforce-style extension pages, icons, license, and documentation completed on October 9, 2026.

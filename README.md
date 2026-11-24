@@ -2,7 +2,7 @@
 <h1 align="center">Salesforce Draft Guard</h1>
 <p align="center"><strong>Write your reply. Keep your progress. Recover your draft.</strong></p>
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.6.3-0176d3" alt="Extension version 0.6.3">
+  <img src="https://img.shields.io/badge/version-0.6.4-0176d3" alt="Extension version 0.6.4">
   <img src="https://img.shields.io/badge/browser-Chrome-0176d3" alt="Chrome extension">
   <img src="https://img.shields.io/badge/Manifest-v3-032d60" alt="Manifest V3">
   <a href="#github-issues"><img src="assets/issues-status.svg" alt="GitHub issue snapshot; see the table for checked date"></a>
@@ -32,7 +32,7 @@ Protect Salesforce Lightning Email, Post, and other detected activity drafts fro
 
 **Current Chrome · Manifest V3 · No build step**
 
-1. Open the [0.6.3 release](https://github.com/teezyyoxo/salesforce-draft-guard/releases/tag/v0.6.3) and download **[Salesforce-Draft-Guard-v0.6.3.zip](https://github.com/teezyyoxo/salesforce-draft-guard/releases/download/v0.6.3/Salesforce-Draft-Guard-v0.6.3.zip)** under **Assets**. Choose this extension ZIP rather than GitHub’s automatically generated source archives. GitHub access is required while the repository is private.
+1. Download **[Salesforce-Draft-Guard-v0.6.4.zip](releases/v0.6.4/Salesforce-Draft-Guard-v0.6.4.zip)**.
 2. Extract the ZIP into a permanent folder, such as `Salesforce-Draft-Guard`. The extracted folder must contain `manifest.json` directly.
 3. Open `chrome://extensions` and turn on **Developer mode**.
 4. Choose **Load unpacked** and select that extracted folder—not the ZIP file. Chrome needs the folder to stay in place.
@@ -63,7 +63,7 @@ git clone https://github.com/teezyyoxo/salesforce-draft-guard.git
 cd salesforce-draft-guard
 ```
 
-Load the cloned folder containing `manifest.json` using **Load unpacked**, then refresh Salesforce. For this checkout, the source folder is `/Users/mgray/GitHub/SFsaver`. To update a clean source checkout, run `git pull --ff-only`, reload the extension, and refresh Salesforce tabs.
+Load the cloned folder containing `manifest.json` using **Load unpacked**, then refresh Salesforce. To update a clean source checkout, run `git pull --ff-only`, reload the extension, and refresh Salesforce tabs.
 
 The repository keeps regression tests and development tools for contributors; these are excluded from the release ZIP.
 
@@ -76,6 +76,16 @@ The repository keeps regression tests and development tools for contributors; th
 3. Send, Share, Save, Post, or Log a Call normally. A successful matching request clears the related drafts; unrelated record saves do not clear a message draft.
 
 Open the extension toolbar icon to review saved drafts. **Clear** removes one entry; **Clear Drafts / Cache** removes all saved drafts and cancels pending saves in open Salesforce frames. Both preserve settings. The popup reviews text; recovery happens inside Salesforce.
+
+The flyout shows the full draft using its saved formatting, including line breaks, lists, code blocks, bold, italics, underline, and strikethrough. Recovery reuses that same markup when it is available. Drafts that were saved as plain text can recover the stored text and line breaks. Email recovery keeps Salesforce's signature and quoted history in the composer and restores the authored reply above it.
+
+Inline images from Case Files, Salesforce's image uploader, or CasePaste are included once they appear in the editor. Salesforce-hosted images keep their original file references and require access to those files. Hyperlinks retain their text and destination, and can be opened from the flyout. Draft protection covers the composer body. Files added only through the separate attachment control are managed by Salesforce. [Salesforce Email composer documentation](https://help.salesforce.com/s/articleView?id=cases_email_lex.htm&language=en_US&type=5)
+
+### Confirm before refreshing Salesforce
+
+Refresh Protection is enabled by default. With Draft Guard enabled, click or type in Salesforce to activate Chrome's native confirmation. **Cmd+R** on Mac, **Ctrl+R** on Windows and Linux, and the browser's **Reload** button can then open the confirmation. Choose **Cancel** to keep the page and your text, or confirm to reload. Chrome can also show the prompt when you close the tab or navigate to another page. [HTML Standard](https://html.spec.whatwg.org/multipage/browsing-the-web.html#preventing-navigation)
+
+To turn it off, open **Settings** from the toolbar popup, uncheck **Ask before refreshing or leaving Salesforce**, and select **Save Settings**. The change applies to open Salesforce tabs already running this build.
 
 ### Demonstration: review saved drafts
 
@@ -90,6 +100,7 @@ Choose **Settings** in the popup, or open the extension’s options from `chrome
 
 | Control | What it changes |
 | --- | --- |
+| Refresh Protection | Asks for confirmation before a Salesforce page reloads or unloads after interaction. On by default. |
 | Protected Actions | Clears related drafts after these enabled actions succeed: Send, Share, Save, Post, Log a Call. |
 | Field Keywords | Matches a field’s own label/attributes; one keyword per line. Defaults cover email, post, call, comment, note, description, body, subject, and message. |
 | Show toasts | Enables/disables save and restore notifications. |
@@ -113,7 +124,7 @@ Choose **Settings** in the popup, or open the extension’s options from `chrome
 
 </details>
 
-Screenshots capture the actual extension pages in a disposable browser profile. Draft examples are synthetic, with no customer data. They demonstrate the popup and settings; live Salesforce recovery still needs testing in your org. Only the main content scrolls; headers, appearance controls, and footers remain visible. On narrow screens, the action controls wrap.
+Screenshots capture the 0.6.3 extension pages in a disposable browser profile with synthetic drafts. Only the main content scrolls, so headers, appearance controls, and footers remain visible. On narrow screens, the action controls wrap. Verify draft recovery in your own Salesforce org.
 
 ## GitHub issues
 
@@ -147,11 +158,11 @@ The table is generated from actual repository issues and includes closed reports
 
 ## Privacy and permissions
 
-- **Storage:** draft text stays in extension session storage where available, with local storage as a fallback. Session drafts are not a durable browser-restart backup. Settings use Chrome sync storage when available; appearance uses local storage.
+- **Storage:** draft text and embedded images stay in extension session storage where available, with local storage as a fallback. Chrome's storage limits apply. Session drafts are not a durable browser-restart backup. Settings use Chrome sync storage when available; appearance uses local storage.
 - **Salesforce host access:** content scripts run on the Salesforce and Visualforce domains listed in `manifest.json`, including matching frames, to detect editors and recover text. The page bridge observes successful write requests for cleanup.
 - **No telemetry or external draft service:** draft text is not sent to an extension backend. Salesforce still receives content through its normal Save/Send actions.
 - **No clipboard or cookie permission:** the only general permission is `storage`.
-- Drafts can contain sensitive text. Use the clear controls when needed. GitHub links open only when selected; extension pages load their assets locally.
+- Drafts can contain sensitive text and images. Use the clear controls when needed. The flyout loads supported file images from Salesforce and opens links only when selected.
 
 See [draft identity, recovery, Email boundaries, and cleanup details](docs/DRAFT_BEHAVIOR.md).
 
@@ -183,7 +194,7 @@ node --test
 
 With Playwright and its Chromium browser installed (`npm install --no-save --package-lock=false playwright` then `npx playwright install chromium`), `node scripts/capture-ui.cjs` verifies the extension pages and regenerates screenshots using a disposable profile. `node scripts/sync-issues.cjs` uses authenticated `gh` access to refresh issue status. See [CHANGELOG.md](CHANGELOG.md) and [the manual verification checklist](docs/DRAFT_BEHAVIOR.md#manual-verification).
 
-To rebuild the extension-only release ZIP and SHA-256 file, run `python3 scripts/package-release.py`. Release notes and packaged artifacts live in `releases/v0.6.3/`.
+To rebuild the extension-only release ZIP and SHA-256 file for 0.6.4, run `python3 scripts/package-release.py`. The package and checksum are in `releases/v0.6.4/`. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 Related project: [CasePaste](https://github.com/teezyyoxo/CasePaste) adds image-paste handling to Salesforce Case posts.
 

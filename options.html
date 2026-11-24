@@ -18,6 +18,15 @@
       <main class="settings-content" aria-label="Protection settings"><div class="content-inner">
       <p class="lede">Keep your progress safe when Salesforce refreshes. Set up draft protection below.</p>
 
+      <section class="panel" aria-labelledby="refreshProtectionHeading">
+        <h2 id="refreshProtectionHeading">Refresh Protection</h2>
+        <p id="refreshProtectionHelp" class="panel-copy">After you interact with Salesforce, Chrome can ask for confirmation when you reload, close, or leave the page.</p>
+        <label class="toggle">
+          <input id="confirmBeforeRefresh" type="checkbox" aria-describedby="refreshProtectionHelp" />
+          <span>Ask before refreshing or leaving Salesforce</span>
+        </label>
+      </section>
+
       <section class="panel">
         <h2>Protected Actions</h2>
         <p class="panel-copy">When one of these actions succeeds in Salesforce, the related saved draft is cleared.</p>

@@ -32,7 +32,7 @@ async function renderDrafts() {
             <span>${formatTimestamp(draft.updatedAt)}</span>
           </div>
           <h2 class="draft-title">${escapeHtml(draft.label || draft.title || "Untitled Draft")}</h2>
-          <p class="draft-preview">${escapeHtml(truncate(draft.value, 220))}</p>
+          <div class="draft-preview"></div>
           <div class="draft-actions">
             <span class="summary">${escapeHtml(draft.title || draft.url || "")}</span>
             <button class="clear-button" type="button" data-key="${escapeHtml(draft.key)}">Clear</button>
@@ -41,6 +41,51 @@ async function renderDrafts() {
       `
     )
     .join("");
+
+  draftsNode.querySelectorAll(".draft-preview").forEach((preview, index) => {
+    renderDraftPreview(preview, drafts[index]);
+  });
+}
+
+function renderDraftPreview(preview, draft) {
+  if (draft.html) {
+    const fragment = SfdgDraftHtml.createFragment(draft.html, document, {
+      preview: true,
+      baseUrl: draft.baseUrl || draft.url
+    });
+    if (fragment.hasChildNodes()) {
+      formatQuillLists(fragment);
+      preview.classList.add("draft-preview-rich");
+      if (["pre", "pre-wrap", "pre-line", "break-spaces"].includes(draft.whiteSpace)) {
+        preview.style.whiteSpace = draft.whiteSpace;
+      }
+      preview.append(fragment);
+      return;
+    }
+  }
+
+  preview.textContent = String(draft.value ?? "");
+}
+
+function formatQuillLists(fragment) {
+  // Quill 2 stores mixed lists in one <ol> and uses each item's data-list and indent
+  // to choose its marker. Native list markers need an explicit value at each level.
+  for (const list of fragment.querySelectorAll(":is(ol, ul):has(> li:is([data-list], [class*='ql-indent-']))")) {
+    const numbers = [(list.start ?? 1) - 1];
+    for (const item of list.children) {
+      const indent = Number(item.className.match(/(?:^|\s)ql-indent-([1-9])(?:\s|$)/)?.[1] || 0);
+      numbers.length = indent + 1;
+      if (indent) {
+        item.style.marginInlineStart = `${indent * 1.5}em`;
+      }
+      const listType = item.dataset.list || (list.localName === "ol" ? "ordered" : "bullet");
+      if (listType === "ordered") {
+        numbers[indent] = (numbers[indent] ?? 0) + 1;
+        item.value = numbers[indent];
+        item.style.listStyleType = ["decimal", "lower-alpha", "lower-roman"][indent % 3];
+      }
+    }
+  }
 }
 
 async function clearAllDraftsFromPopup() {
@@ -86,11 +131,6 @@ function formatTimestamp(value) {
     hour: "numeric",
     minute: "2-digit"
   });
-}
-
-function truncate(value, maxLength) {
-  value = String(value || "");
-  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 
 function escapeHtml(value) {

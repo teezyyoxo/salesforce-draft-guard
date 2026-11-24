@@ -1,6 +1,7 @@
 const DEFAULT_SETTINGS = {
   protectedActions: ["send", "share", "save", "post", "log a call"],
   fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
+  confirmBeforeRefresh: true,
   showToasts: true,
   toastPosition: "lower-right",
   toastSize: "medium",
@@ -26,6 +27,7 @@ const settingsArea = chrome.storage.sync || chrome.storage.local;
 
 const actionsNode = document.getElementById("actions");
 const keywordsNode = document.getElementById("keywords");
+const confirmBeforeRefreshNode = document.getElementById("confirmBeforeRefresh");
 const showToastsNode = document.getElementById("showToasts");
 const toastPositionNode = document.getElementById("toastPosition");
 const toastSizeNode = document.getElementById("toastSize");
@@ -66,6 +68,7 @@ async function loadSettings() {
   }
 
   keywordsNode.value = settings.fieldKeywords.join("\n");
+  confirmBeforeRefreshNode.checked = settings.confirmBeforeRefresh;
   showToastsNode.checked = settings.showToasts;
   toastPositionNode.value = settings.toastPosition;
   toastSizeNode.value = settings.toastSize;
@@ -109,6 +112,7 @@ function collectSettings() {
       .split(/\n|,/)
       .map((value) => normalizeWhitespace(value.toLowerCase()))
       .filter(Boolean),
+    confirmBeforeRefresh: confirmBeforeRefreshNode.checked,
     showToasts: showToastsNode.checked,
     toastPosition: toastPositionNode.value,
     toastSize: toastSizeNode.value,
@@ -123,6 +127,7 @@ function normalizeSettings(stored) {
   return {
     protectedActions: normalizeList(stored.protectedActions, DEFAULT_SETTINGS.protectedActions),
     fieldKeywords: normalizeList(stored.fieldKeywords, DEFAULT_SETTINGS.fieldKeywords),
+    confirmBeforeRefresh: stored.confirmBeforeRefresh !== false,
     showToasts: stored.showToasts !== false,
     toastPosition: normalizeChoice(stored.toastPosition, TOAST_POSITIONS, DEFAULT_SETTINGS.toastPosition),
     toastSize: normalizeChoice(stored.toastSize, TOAST_SIZES, DEFAULT_SETTINGS.toastSize),

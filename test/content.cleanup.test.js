@@ -231,6 +231,7 @@ test("a manual clear invalidates live draft caches and readies the next user edi
   state.trackedEditors.set(editor, { storageKey: key });
 
   context.handleManualDraftClear({ all: true });
+  context.handleStorageChange({ [key]: { oldValue: { value: "pending text" } } }, "session");
 
   assert.equal(state.draftCache.has(key), false);
   assert.equal(state.clearedDraftKeys.has(key), true);

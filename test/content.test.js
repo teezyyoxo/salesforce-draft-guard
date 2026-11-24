@@ -64,6 +64,7 @@ function loadContentScript(extraCode = "") {
         href: "https://example.lightning.force.com/lightning/r/Case/500ABCDEF123456/view?nonce=abc&c__id=42"
       },
       addEventListener: () => {},
+      removeEventListener: () => {},
       clearTimeout: () => {},
       setTimeout: () => 1
     },
@@ -108,32 +109,63 @@ test("stable page context ignores volatile params and uses the top URL", () => {
   `);
 });
 
-test("page exit flushes only unsent filled editors, including tracked iframe editors", () => {
+test("refresh confirmation defaults on and updates immediately in the top-level Salesforce page", () => {
   loadContentScript(`
-    const visibleEditor = { id: "visible" };
-    const iframeEditor = { id: "iframe" };
-    const emptyEditor = { id: "empty" };
+    const handlers = new Map();
+    window.addEventListener = (name, handler) => handlers.set(name, handler);
+    window.removeEventListener = (name) => handlers.delete(name);
+
+    settings = normalizeSettings({});
+    updateRefreshConfirmation();
+    const event = { preventDefault() { this.defaultPrevented = true; } };
+    handlers.get("beforeunload")(event);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(event.returnValue, true);
+
+    handleStorageChange({ confirmBeforeRefresh: { newValue: false } }, "local");
+    assert.equal(handlers.has("beforeunload"), true);
+    handleStorageChange({ confirmBeforeRefresh: { newValue: false } }, "sync");
+    assert.equal(handlers.has("beforeunload"), false);
+    handleStorageChange({ confirmBeforeRefresh: { newValue: undefined } }, "sync");
+    assert.equal(handlers.has("beforeunload"), true);
+
+    handlers.clear();
+    window.top = {};
+    updateRefreshConfirmation();
+    assert.equal(handlers.has("beforeunload"), false);
+  `);
+});
+
+test("page exit flushes pending snapshots even after Salesforce resets or detaches an editor", () => {
+  loadContentScript(`
+    const resetEditor = { id: "reset", value: "" };
+    const iframeEditor = { id: "iframe", isConnected: false };
     const submittedEditor = { id: "submitted" };
     const clearedEditor = { id: "cleared" };
-    const cancelled = [];
     const persisted = [];
 
-    collectDraftEditors = () => [visibleEditor, emptyEditor, submittedEditor, clearedEditor];
-    hasUserValue = (editor) => editor !== emptyEditor;
-    cancelScheduledSave = (editor) => cancelled.push(editor.id);
-    persistDraft = (editor) => {
-      persisted.push(editor.id);
-      return Promise.resolve();
+    for (const editor of [resetEditor, iframeEditor, submittedEditor, clearedEditor]) {
+      saveTimers.set(editor, {
+        timerId: 1,
+        meta: { storageKey: "sfdg:draft:" + editor.id },
+        snapshot: { value: "Captured " + editor.id }
+      });
+    }
+    collectDraftEditors = () => assert.fail("Page exit must not scan live editor content");
+    persistDraft = async (_editor, meta, snapshot) => {
+      persisted.push([meta.storageKey, snapshot.value]);
     };
-    trackedEditors.set(iframeEditor, { storageKey: "sfdg:draft:email" });
-    trackedEditors.set(clearedEditor, { storageKey: "sfdg:draft:sent-email" });
     submittedEditors.add(submittedEditor);
-    clearedDraftKeys.add("sfdg:draft:sent-email");
+    clearedDraftKeys.add("sfdg:draft:cleared");
 
     flushPendingDrafts();
+    flushPendingDrafts();
 
-    assert.deepEqual(cancelled, ["visible", "empty", "submitted", "cleared", "iframe"]);
-    assert.deepEqual(persisted, ["visible", "iframe"]);
+    assert.equal(saveTimers.size, 0);
+    assert.deepEqual(persisted, [
+      ["sfdg:draft:reset", "Captured reset"],
+      ["sfdg:draft:iframe", "Captured iframe"]
+    ]);
   `);
 });
 
@@ -591,6 +623,48 @@ test("a reused editor can restore a different ticket key exactly once", async ()
   `);
 });
 
+for (const change of ["typing", "navigation", "clearing", "a concurrent restore"]) {
+  test("a delayed restore respects " + change, async () => {
+    await loadContentScript(`
+      (async () => {
+        const editor = { nodeType: 1, tagName: "TEXTAREA", value: "" };
+        const key = "sfdg:draft:original";
+        const recordId = "500TICKET000001";
+        let currentMeta = { storageKey: key, recordId };
+        let finishRead;
+        const stored = { [key]: { value: "Saved draft", recordId } };
+        let writes = 0;
+
+        getDraftMetadata = () => currentMeta;
+        getDraftValue = () => new Promise((resolve) => { finishRead = resolve; });
+        readElementValue = () => editor.value;
+        isElementRenderable = () => true;
+        isEmailEditorElement = () => false;
+        writeElementValueGuarded = () => { writes += 1; };
+        showToast = () => {};
+
+        const restoring = restoreDraft(editor);
+        const change = ${JSON.stringify(change)};
+        if (change === "typing") {
+          editor.value = "New work";
+        } else if (change === "navigation") {
+          currentMeta = { storageKey: "sfdg:draft:next", recordId: "500TICKET000002" };
+        } else if (change === "clearing") {
+          handleManualDraftClear({ all: true });
+        } else {
+          getDraftValue = async () => stored;
+          await restoreDraft(editor);
+        }
+        finishRead(stored);
+        await restoring;
+
+        assert.equal(writes, change === "a concurrent restore" ? 1 : 0);
+        if (change === "clearing") assert.equal(draftCache.has(key), false);
+      })()
+    `);
+  });
+}
+
 test("restore discards a draft whose stored record owner does not match the composer", async () => {
   await loadContentScript(`
     (async () => {
@@ -809,12 +883,13 @@ test("submitted editor content cannot schedule a late draft save", () => {
   `);
 });
 
-test("a draft clear received from another frame cancels its pending autosave", () => {
+test("a cross-frame clear cancels a matching pending autosave even after editor reuse", () => {
   loadContentScript(`
     const editor = { nodeType: 1, tagName: "DIV" };
     const key = "sfdg:draft:email";
-    trackedEditors.set(editor, { storageKey: key });
-    saveTimers.set(editor, 1);
+    const meta = { storageKey: key };
+    trackedEditors.set(editor, { storageKey: "sfdg:draft:next-record" });
+    saveTimers.set(editor, { timerId: 1, meta, snapshot: { value: "sent" } });
 
     handleStorageChange({ [key]: { oldValue: { value: "sent" }, newValue: undefined } }, "session");
     assert.equal(saveTimers.has(editor), false);
@@ -913,17 +988,28 @@ test("restore only fills empty fields so edits and deletions are never undone", 
 
 test("contenteditable restore prefers captured HTML so formatting and breaks survive", () => {
   loadContentScript(`
+    const html = "<p><strong>bold</strong><em>italic</em><u>underline</u><s>strike</s><br>line</p>" +
+      "<p><br></p><ol><li>Numbered</li></ol><ul><li>Bullet</li></ul><pre>  code\\n    indent</pre>";
+    const fragment = { hasChildNodes: () => true };
+    globalThis.SfdgDraftHtml = {
+      createFragment: (markup) => {
+        assert.equal(markup, html);
+        return fragment;
+      }
+    };
     const el = {
       nodeType: 1,
       tagName: "DIV",
       isContentEditable: true,
       getAttribute: () => "",
-      innerHTML: "",
+      replaceChildren: (restored) => assert.equal(restored, fragment),
+      dispatchEvent: (event) => assert.equal(event.type, "input"),
       ownerDocument: document
     };
+    insertViaPaste = () => assert.fail("Saved editor markup should bypass clipboard conversion");
 
-    writeElementValue(el, { value: "bold line", html: "<strong>bold</strong><br>line" });
-    assert.equal(el.innerHTML, "<strong>bold</strong><br>line");
+    writeElementValueGuarded(el, { value: "plain fallback", html });
+    assert.equal(restoringNow.has(el), true);
   `);
 });
 
@@ -1013,7 +1099,7 @@ test("different quoted Email conversations have different restore contexts on on
   `);
 });
 
-test("Email restore rejects another reply context even on the same Case", async () => {
+test("Email restore preserves a saved reply when another conversation opens on the same Case", async () => {
   await loadContentScript(`
     (async () => {
       const quotedChain = "From: current@example.com\\nCurrent conversation";
@@ -1056,7 +1142,8 @@ test("Email restore rejects another reply context even on the same Case", async 
       await restoreDraft(editor);
 
       assert.equal(writes, 0);
-      assert.equal(discarded, 1);
+      assert.equal(discarded, 0);
+      assert.equal(draftCache.get(meta.storageKey).value, "Reply for a different conversation");
     })()
   `);
 });
@@ -1357,20 +1444,75 @@ test("background Post viewport reset does not recreate a selection inside the ed
   `);
 });
 
-test("Email block markup becomes one line unit per paragraph", () => {
+test("Email snapshots keep formatting when typing replaces the blank line above a quote", () => {
   loadContentScript(`
-    const text = (value) => ({ nodeType: 3, textContent: value });
-    const block = (tagName, children) => ({ nodeType: 1, tagName, childNodes: children });
-    const one = text("First line");
-    const two = text("Second line");
-    const blank = block("P", [{ nodeType: 1, tagName: "BR" }]);
+    const quote = "<blockquote>Original chain</blockquote>";
+    const placeholder = "<p><br></p>";
+    const reply = "<p><strong>First</strong><br>Second</p><ol><li>item</li></ol><pre>  line</pre>";
+    const editor = {
+      nodeType: 1,
+      tagName: "BODY",
+      isContentEditable: true,
+      innerText: "\\n\\n\\nOriginal chain",
+      innerHTML: placeholder + quote,
+      getAttribute: () => "Email Body"
+    };
+    initializeEmailDraftState(editor, "500ABCDEF123456").editStarted = true;
+    editor.innerText = "First\\nSecond\\nitem\\n  line\\nOriginal chain";
+    editor.innerHTML = reply + quote;
 
-    const units = collectEmailLineUnits([
-      block("P", [one]),
-      blank,
-      block("DIV", [two])
-    ]);
-
-    assert.deepEqual(units, [[one], [], [two]]);
+    const snapshot = captureEmailDraftSnapshot(editor);
+    assert.equal(snapshot.valid, true);
+    assert.equal(snapshot.html, reply);
+    assert.equal(snapshot.replacesEmailPlaceholder, true);
   `);
 });
+
+test("Email HTML extraction requires an exact known boundary", () => {
+  loadContentScript(`
+    const quote = "<blockquote>Original chain</blockquote>";
+    const reply = "<p><b>Reply</b></p><p><br></p>";
+    assert.deepEqual(getEmailHtmlPrefix(reply + quote, quote), { html: reply });
+    assert.deepEqual(getEmailHtmlPrefix(reply + quote, null), {});
+    assert.deepEqual(getEmailHtmlPrefix(reply + quote, "<p>Original chain</p>"), {});
+  `);
+});
+
+test("an image-only draft counts as content while an image placeholder does not", () => {
+  loadContentScript(`
+    const image = '<p><img src="/sfc/servlet.shepherd/document/download/069000000000001AAA"></p>';
+    assert.equal(hasDraftContent({ value: "", html: image }), true);
+    assert.equal(hasDraftContent({ value: "", html: '<p><img src="" alt="Uploading"></p>' }), false);
+    assert.equal(hasDraftContent({ value: "", html: '<p><a href="/lightning/page/home"> </a></p>' }), true);
+  `);
+});
+
+for (const [type, reply, text] of [
+  ["image", '<p><img src="/servlet/rtaImage?id=authored"></p>', ""],
+  ["link", '<p><a href="/lightning/page/home">Case history</a></p>', "Case history\n"]
+]) {
+  test("an Email toolbar " + type + " insertion preserves only the authored reply", () => {
+    loadContentScript(`
+      const quote = '<blockquote>Quoted text<img src="/servlet/rtaImage?id=quoted"></blockquote>';
+      const editor = {
+        nodeType: 1,
+        tagName: "BODY",
+        isContentEditable: true,
+        innerText: "\\nQuoted text",
+        innerHTML: '<p><br></p>' + quote,
+        getAttribute: () => "Email Body"
+      };
+      getRecordIdForScope = () => "500ABCDEF123456";
+      getContainer = () => editor;
+      const state = initializeEmailDraftState(editor);
+      state.richInsert = { type: ${JSON.stringify(type)}, expiresAt: Date.now() + 1000 };
+      editor.innerHTML = ${JSON.stringify(reply)} + quote;
+      editor.innerText = ${JSON.stringify(text)} + "Quoted text";
+      assert.equal(prepareEmailDraftEvent(editor, "rich-insert-mutation", false), true);
+      const saved = captureEmailDraftSnapshot(editor);
+      assert.equal(saved.html, ${JSON.stringify(reply)});
+      assert.equal(saved.value.trimEnd(), ${JSON.stringify(text.trimEnd())});
+      assert.equal(saved.replacesEmailPlaceholder, true);
+    `);
+  });
+}

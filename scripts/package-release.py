@@ -9,7 +9,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 FILES = [
     'manifest.json', 'background.js', 'content.js', 'content.css', 'injected.js',
-    'draft-storage.js', 'popup.html', 'popup.css', 'popup.js',
+    'draft-storage.js', 'draft-html.js', 'popup.html', 'popup.css', 'popup.js',
     'options.html', 'options.css', 'options.js', 'theme.js', 'ui.css',
     'assets/icon.svg', 'assets/icon-16.png', 'assets/icon-32.png',
     'assets/icon-48.png', 'assets/icon-128.png', 'LICENSE',

@@ -1,6 +1,8 @@
 const STORAGE_PREFIX = "sfdg:draft:";
 const SAVE_DELAY_MS = 700;
 const EMAIL_BASELINE_SETTLE_MS = 800;
+const EMAIL_RICH_INSERT_TIMEOUT_MS = 120000;
+const EMAIL_FRAME_SELECTOR = "iframe.cke_wysiwyg_frame[title='Email Body']";
 const TOAST_BURST_RESET_MS = 1500;
 const PENDING_ACTION_TTL_MS = 15000;
 const TOAST_TTL_MS = 2200;
@@ -18,6 +20,7 @@ const MANUAL_CLEAR_SIGNAL_KEY = "sfdg:draft-clear-signal";
 const DEFAULT_SETTINGS = {
   protectedActions: ["send", "share", "save", "post", "log a call"],
   fieldKeywords: ["email", "post", "call", "comment", "note", "description", "body", "subject", "message"],
+  confirmBeforeRefresh: true,
   showToasts: true,
   toastPosition: "lower-right",
   toastSize: "medium",
@@ -37,7 +40,7 @@ const draftCache = new Map();
 const pendingActions = [];
 const trackedEditors = new Map();
 const editorDraftOwnership = new WeakMap();
-const saveTimers = new WeakMap();
+const saveTimers = new Map();
 const submittedEditors = new WeakSet();
 const toastStateByElement = new WeakMap();
 const observedEditors = new WeakSet();
@@ -291,7 +294,13 @@ function collectDraftEditors(root) {
 bootstrap();
 
 async function bootstrap() {
+  // The parent observes its accessible CKEditor body, including native insert buttons.
+  // Only one instance may decide which part of that body belongs to the user.
+  if (window.frameElement?.matches(EMAIL_FRAME_SELECTOR)) {
+    return;
+  }
   [settings, tabContextKey] = await Promise.all([loadSettings(), loadTabContextKey()]);
+  updateRefreshConfirmation();
   debugLog("bootstrap", { href: location.href, settings });
   injectNetworkHook();
   bindGlobalListeners();
@@ -303,6 +312,25 @@ async function bootstrap() {
       scanAndRestore(document);
     });
   }
+}
+
+function updateRefreshConfirmation() {
+  // The top-level handler also covers interaction in embedded editors. Installing it in
+  // each frame would allow Salesforce's normal iframe reloads to bring up the prompt.
+  if (window !== window.top) {
+    return;
+  }
+
+  if (settings.confirmBeforeRefresh) {
+    window.addEventListener("beforeunload", handleBeforeUnload);
+  } else {
+    window.removeEventListener("beforeunload", handleBeforeUnload);
+  }
+}
+
+function handleBeforeUnload(event) {
+  event.preventDefault();
+  event.returnValue = true;
 }
 
 async function loadTabContextKey() {
@@ -370,6 +398,7 @@ function bindGlobalListeners() {
   document.addEventListener("change", handleInputEvent, true);
   document.addEventListener("keyup", handleInputEvent, true);
   document.addEventListener("paste", handleInputEvent, true);
+  document.addEventListener("drop", handleInputEvent, true);
   document.addEventListener("blur", handleInputEvent, true);
   document.addEventListener("focusin", handleFocusEvent, true);
   document.addEventListener("click", handleClickEvent, true);
@@ -389,38 +418,18 @@ function handleVisibilityChange() {
 }
 
 function flushPendingDrafts() {
-  // A CKEditor Email body may be tracked through its iframe rather than discovered by a query
-  // from the top document, so include both sources. Duplicate entries are intentionally folded
-  // together before saving.
-  const editors = new Set([...collectDraftEditors(document), ...trackedEditors.keys()]);
-  editors.forEach((editor) => {
+  // Salesforce can reset or detach a composer before pagehide. Keep the text and record
+  // identity captured at edit time, including for editors inside CKEditor frames.
+  for (const editor of saveTimers.keys()) {
     const scheduledSave = cancelScheduledSave(editor);
-    if (!shouldPersistDraftOnPageExit(editor)) {
-      return;
+    if (submittedEditors.has(editor) || clearedDraftKeys.has(scheduledSave.meta.storageKey)) {
+      continue;
     }
 
-    const persist = scheduledSave && scheduledSave.meta && scheduledSave.snapshot
-      ? persistDraft(editor, scheduledSave.meta, scheduledSave.snapshot)
-      : persistDraft(editor);
-    persist.catch((error) => {
+    persistDraft(editor, scheduledSave.meta, scheduledSave.snapshot).catch((error) => {
       console.error("Salesforce Draft Guard failed to flush a draft before page exit.", error);
     });
-  });
-}
-
-function shouldPersistDraftOnPageExit(editor) {
-  // Salesforce can keep submitted Post/Email text mounted until its next view has loaded.
-  // A visibilitychange/pagehide flush must not turn that already-submitted text back into a
-  // local draft after the matching successful request has cleared it.
-  if (submittedEditors.has(editor) || !hasUserValue(editor)) {
-    return false;
   }
-
-  // CKEditor Email bodies are handled by a separate content-script instance, so that frame
-  // cannot always see the outer Send click. Storage-change cleanup shares this tombstone with
-  // it; honoring it here prevents a late iframe page-exit flush from recreating a sent draft.
-  const meta = trackedEditors.get(editor) || getDraftMetadata(editor);
-  return !meta || !clearedDraftKeys.has(meta.storageKey);
 }
 
 function handleFocusEvent(event) {
@@ -449,7 +458,9 @@ function handleStorageChange(changes, areaName) {
 
   if (areaName === "session" || areaName === "local") {
     const removedDraftKeys = Object.entries(changes)
-      .filter(([key, change]) => key.startsWith(STORAGE_PREFIX) && !change.newValue)
+      .filter(([key, change]) =>
+        key.startsWith(STORAGE_PREFIX) && !change.newValue && !clearedDraftKeys.has(key)
+      )
       .map(([key]) => key);
     if (removedDraftKeys.length) {
       // Email bodies run in CKEditor iframes, which have their own content-script instance.
@@ -459,28 +470,21 @@ function handleStorageChange(changes, areaName) {
     }
   }
 
-  if (areaName !== "sync" && areaName !== "local") {
+  const settingsAreaName = chrome.storage.sync ? "sync" : "local";
+  if (areaName !== settingsAreaName || !Object.keys(DEFAULT_SETTINGS).some((key) => key in changes)) {
     return;
   }
 
-  const relevantKeys = [
-    "protectedActions",
-    "fieldKeywords",
-    "showToasts",
-    "toastPosition",
-    "toastSize",
-    "toastFrequency",
-    "toastTextColor",
-    "toastBackgroundColor",
-    "toastSound"
-  ];
-  if (!relevantKeys.some((key) => key in changes)) {
-    return;
+  // The event already carries the new values. Applying them in order avoids a second
+  // asynchronous storage read that could reapply an older toggle state.
+  const nextSettings = { ...settings };
+  for (const key of Object.keys(DEFAULT_SETTINGS)) {
+    if (key in changes) {
+      nextSettings[key] = changes[key].newValue;
+    }
   }
-
-  loadSettings().then((nextSettings) => {
-    settings = nextSettings;
-  });
+  settings = normalizeSettings(nextSettings);
+  updateRefreshConfirmation();
 }
 
 function handleManualDraftClear(command) {
@@ -489,6 +493,7 @@ function handleManualDraftClear(command) {
   if (command && command.all) {
     draftCache.forEach((_draft, key) => storageKeys.add(key));
     draftStorageQueues.forEach((_operation, key) => storageKeys.add(key));
+    saveTimers.forEach(({ meta }) => storageKeys.add(meta.storageKey));
     trackedEditors.forEach((meta) => storageKeys.add(meta.storageKey));
     pendingActions.forEach((action) => {
       (action.draftKeys || []).forEach((key) => storageKeys.add(key));
@@ -543,12 +548,20 @@ function startObserver() {
 }
 
 function handleInputEvent(event) {
+  if (event.isTrusted && event.type === "change" && event.target?.matches?.('input[type="file"]') &&
+    Array.from(event.target.files || []).some((file) => file.type.startsWith("image/"))) {
+    armEmailRichInsert(event.target, "image");
+    return;
+  }
   const target = getDraftElement(event.target);
   if (!target) {
     return;
   }
 
-  scheduleSave(target, event.type, event.isTrusted);
+  const eventType = event.type === "keyup" && ["Backspace", "Delete"].includes(event.key)
+    ? "delete-key"
+    : event.type;
+  scheduleSave(target, eventType, event.isTrusted);
 }
 
 function handleClickEvent(event) {
@@ -557,6 +570,12 @@ function handleClickEvent(event) {
     return;
   }
 
+  if (event.isTrusted) {
+    const insertType = getRichInsertType(button);
+    if (insertType) {
+      armEmailRichInsert(button, insertType);
+    }
+  }
   const actionLabel = getSubmitActionLabel(button);
   if (!isSubmitAction(actionLabel)) {
     return;
@@ -583,6 +602,41 @@ function handleClickEvent(event) {
   pendingActions.unshift(pendingAction);
 
   prunePendingActions();
+}
+
+function getRichInsertType(button) {
+  const labels = [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent];
+  for (const type of ["image", "link"]) {
+    if (button.matches(`.cke_button__${type}, [data-value='${type}']`) || labels.some((label) => {
+      const text = normalizeWhitespace(label || "").toLowerCase();
+      return [type, `${type}s`, `insert ${type}`, `add ${type}`, `upload ${type}`, `select ${type}`].includes(text) ||
+        (type === "image" && text === "insert an image") || (type === "link" && text === "insert a link");
+    })) {
+      return type;
+    }
+  }
+  return "";
+}
+
+function armEmailRichInsert(control, type) {
+  const container = control.closest(".cke") || getContainer(control);
+  if (!container || container === control.ownerDocument.body || getContainerActionType(container) !== "email") {
+    return;
+  }
+  const editors = new Set(collectDraftEditors(container).filter(isEmailEditorElement));
+  for (const frame of container.querySelectorAll(EMAIL_FRAME_SELECTOR)) {
+    const body = frame.contentDocument?.body;
+    if (isElementRenderable(frame) && isEmailEditorElement(body)) editors.add(body);
+  }
+  if (editors.size !== 1) return;
+
+  const [editor] = editors;
+  const state = initializeEmailDraftState(editor);
+  if (state) {
+    restoringNow.delete(editor);
+    reconcileEmailStateBeforeEdit(editor, state);
+    state.richInsert = { type, expiresAt: Date.now() + EMAIL_RICH_INSERT_TIMEOUT_MS };
+  }
 }
 
 function handleWindowMessage(event) {
@@ -616,11 +670,9 @@ function handleWindowMessage(event) {
 }
 
 function scheduleSave(element, eventType = "", eventIsTrusted = false) {
-  // While we are programmatically restoring a draft, the write (and the editor's own
-  // re-normalization of it) must not be treated as fresh user input, or it would re-save
-  // the restored value and compound line breaks. Both the input listeners and the editor
-  // MutationObserver funnel through here, so this single guard covers all save triggers.
-  if (restoringNow.has(element)) {
+  // Ignore the synthetic input and editor mutations from recovery. A trusted input can
+  // still save immediately if the user edits while recovery is settling.
+  if (restoringNow.has(element) && !eventIsTrusted) {
     return;
   }
 
@@ -672,11 +724,8 @@ function scheduleSave(element, eventType = "", eventIsTrusted = false) {
   // window left a stale draft available for Salesforce's rerender/focus restore path, which
   // made Backspace/Delete appear to fight the user.
   if (!hasUserValue(element)) {
-    // Salesforce frequently empties, replaces, or hides inactive composers as part of a
-    // different composer being submitted. Those lifecycle mutations are not evidence that
-    // the user erased this draft. Only a trusted input event can clear an empty draft;
-    // the observer's unlabelled mutations and synthetic editor events can still save content
-    // but may never discard it.
+    // Salesforce frequently empties inactive composers when submitting a different one.
+    // Require trusted input or a delete key before discarding an empty draft.
     if (!shouldClearDraftForEmptyEvent(eventType, eventIsTrusted)) {
       return;
     }
@@ -757,13 +806,13 @@ function scheduleSave(element, eventType = "", eventIsTrusted = false) {
 }
 
 function shouldClearDraftForEmptyEvent(eventType, eventIsTrusted) {
-  return Boolean(eventIsTrusted) && eventType === "input";
+  return Boolean(eventIsTrusted) && ["input", "delete-key"].includes(eventType);
 }
 
 function cancelScheduledSave(element) {
   const scheduledSave = saveTimers.get(element);
   if (scheduledSave) {
-    window.clearTimeout(scheduledSave.timerId || scheduledSave);
+    window.clearTimeout(scheduledSave.timerId);
   }
   saveTimers.delete(element);
   return scheduledSave;
@@ -789,12 +838,23 @@ function captureDraftSnapshot(element) {
 
   const value = readElementValue(element);
   const rawHtml = readElementHtml(element);
-  return {
+  return prepareRichSnapshot(element, {
     value,
     html: rawHtml,
+    whiteSpace: rawHtml ? readEditorWhiteSpace(element) : undefined,
     url: getPageLocationHref(),
     title: getPageTitle()
-  };
+  });
+}
+
+function prepareRichSnapshot(element, snapshot) {
+  if (snapshot.html) {
+    snapshot.baseUrl = element.ownerDocument?.baseURI;
+    if (/<img\b[^>]*\ssrc="blob:/i.test(snapshot.html)) {
+      snapshot.blobImageSnapshot = SfdgDraftHtml.freezeBlobImages(snapshot.html, element.ownerDocument);
+    }
+  }
+  return snapshot;
 }
 
 function initializeEmailDraftState(element, knownRecordId = "") {
@@ -873,6 +933,23 @@ function prepareEmailDraftEvent(element, eventType, eventIsTrusted) {
   }
 
   if (!eventIsTrusted) {
+    const insert = state.richInsert;
+    const insertPending = insert && insert.expiresAt > Date.now();
+    if (eventType === "rich-insert-mutation" && (insertPending || state.editStarted) && state.captureSafe) {
+      const reply = readAuthoredEmail(element, state);
+      const hasImage = hasInlineImage(reply.html);
+      const hasLink = hasHyperlink(reply.html);
+      const matchesInsert = insertPending && (insert.type === "image" ? hasImage && !reply.value?.trim() : hasLink);
+      if (reply.value !== null && (matchesInsert || (state.editStarted && (hasImage || hasLink)))) {
+        state.richInsert = null;
+        state.editStarted = true;
+        state.readyForRestore = true;
+        return true;
+      }
+    }
+    if (insertPending && !state.editStarted) {
+      return false;
+    }
     if (!state.editStarted) {
       updateEmailBaseline(element, state);
     } else if (!readElementValue(element).trim() && !(readElementHtml(element) || "").trim()) {
@@ -890,7 +967,7 @@ function prepareEmailDraftEvent(element, eventType, eventIsTrusted) {
     return false;
   }
 
-  if (eventType === "beforeinput" || eventType === "paste") {
+  if (["beforeinput", "paste", "drop"].includes(eventType)) {
     reconcileEmailStateBeforeEdit(element, state);
     state.editStarted = true;
     state.readyForRestore = true;
@@ -904,31 +981,27 @@ function prepareEmailDraftEvent(element, eventType, eventIsTrusted) {
     return false;
   }
 
-  return state.captureSafe && (eventType === "input" || eventType === "change");
+  return state.captureSafe && ["input", "change", "delete-key"].includes(eventType);
 }
 
 function reconcileEmailStateBeforeEdit(element, state) {
-  const currentValue = readElementValue(element);
-  const currentHtml = readElementHtml(element) || "";
-
   if (!state.editStarted) {
-    state.baselineValue = currentValue;
-    state.baselineHtml = currentHtml;
+    state.baselineValue = readElementValue(element);
+    state.baselineHtml = readElementHtml(element) || "";
     state.authoredValue = "";
     state.authoredHtml = "";
     state.captureSafe = true;
     return;
   }
 
-  const authoredValue = deriveAuthoredEmailPrefix(currentValue, state.baselineValue);
-  if (authoredValue === null) {
+  const { value, html } = readAuthoredEmail(element, state);
+  if (value === null) {
     state.captureSafe = false;
     return;
   }
 
-  state.authoredValue = authoredValue;
-  const authoredHtml = deriveAuthoredEmailPrefix(currentHtml, state.baselineHtml);
-  state.authoredHtml = authoredHtml === null ? "" : authoredHtml;
+  state.authoredValue = value;
+  state.authoredHtml = html || "";
 }
 
 function reconcileEmailFrameworkMutation(element, state) {
@@ -941,18 +1014,18 @@ function reconcileEmailFrameworkMutation(element, state) {
     if (currentValue.startsWith(state.authoredValue)) {
       state.baselineValue = currentValue.slice(state.authoredValue.length);
       const currentHtml = readElementHtml(element) || "";
-      if (currentHtml.startsWith(state.authoredHtml)) {
-        state.baselineHtml = currentHtml.slice(state.authoredHtml.length);
-      }
+      state.baselineHtml = state.authoredHtml && currentHtml.startsWith(state.authoredHtml)
+        ? currentHtml.slice(state.authoredHtml.length)
+        : null;
       return;
     }
     state.captureSafe = false;
     return;
   }
 
-  const derivedValue = deriveAuthoredEmailPrefix(currentValue, state.baselineValue);
-  if (derivedValue !== null) {
-    state.authoredValue = derivedValue;
+  const { value } = readAuthoredEmail(element, state, currentValue);
+  if (value !== null) {
+    state.authoredValue = value;
     return;
   }
 
@@ -964,7 +1037,7 @@ function reconcileEmailFrameworkMutation(element, state) {
     if (state.authoredHtml && currentHtml.startsWith(state.authoredHtml)) {
       state.baselineHtml = currentHtml.slice(state.authoredHtml.length);
     } else {
-      state.baselineHtml = "";
+      state.baselineHtml = null;
       state.authoredHtml = "";
     }
     return;
@@ -987,24 +1060,21 @@ function captureEmailDraftSnapshot(element) {
     return snapshot;
   }
 
-  const currentValue = readElementValue(element);
-  const authoredValue = deriveAuthoredEmailPrefix(currentValue, state.baselineValue);
-  if (authoredValue === null) {
+  const { value, html, replacesPlaceholder } = readAuthoredEmail(element, state);
+  if (value === null) {
     state.captureSafe = false;
     return snapshot;
   }
 
-  const currentHtml = readElementHtml(element) || "";
-  const authoredHtml = deriveAuthoredEmailPrefix(currentHtml, state.baselineHtml);
-  state.authoredValue = authoredValue;
-  state.authoredHtml = authoredHtml === null ? "" : authoredHtml;
-  snapshot.value = authoredValue;
-  snapshot.html = authoredHtml
-    ? normalizeEmailDraftHtml(authoredHtml, element.ownerDocument || document)
-    : undefined;
+  state.authoredValue = value;
+  state.authoredHtml = html || "";
+  snapshot.value = value;
+  snapshot.html = html;
+  snapshot.whiteSpace = html ? readEditorWhiteSpace(element) : undefined;
+  snapshot.replacesEmailPlaceholder = replacesPlaceholder;
   snapshot.emailContextKey = getEmailBaselineContextKey(state);
   snapshot.valid = true;
-  return snapshot;
+  return prepareRichSnapshot(element, snapshot);
 }
 
 function refreshPendingEmailSnapshot(element, state) {
@@ -1025,7 +1095,10 @@ function getEmailBaselineContextKey(state) {
   if (!state) {
     return "";
   }
-  return hashKey(`${state.recordId}::${normalizeWhitespace(state.baselineValue)}`);
+  const baseline = normalizeWhitespace(state.baselineValue);
+  // An image-only quoted message has no innerText to distinguish it from another reply.
+  const context = baseline || (hasInlineImage(state.baselineHtml) ? state.baselineHtml : "");
+  return hashKey(`${state.recordId}::${context}`);
 }
 
 function deriveAuthoredEmailPrefix(currentContent, baselineContent) {
@@ -1040,18 +1113,54 @@ function deriveAuthoredEmailPrefix(currentContent, baselineContent) {
   return current.slice(0, current.length - baseline.length);
 }
 
-async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = null) {
-  const snapshot = scheduledSnapshot || captureDraftSnapshot(element);
+function readAuthoredEmail(element, state, currentValue = readElementValue(element)) {
+  const currentHtml = readElementHtml(element) || "";
+  const { html, replacesPlaceholder } = getEmailHtmlPrefix(currentHtml, state.baselineHtml);
+  let value = deriveAuthoredEmailPrefix(currentValue, state.baselineValue);
+  if (value === null && html) {
+    // Filling an empty CKEditor paragraph can change the surrounding layout-generated
+    // newlines in innerText. Relax those only when the quoted HTML matches exactly.
+    value = deriveAuthoredEmailPrefix(currentValue, state.baselineValue.trimStart());
+  }
+  return { value, html, replacesPlaceholder };
+}
+
+function getEmailHtmlPrefix(currentHtml, baselineHtml) {
+  // An unknown HTML boundary can still have a verified plain-text boundary. Never let the
+  // HTML fallback include the signature or quoted message when its suffix is unknown.
+  if (baselineHtml === null) {
+    return {};
+  }
+
+  const prefix = deriveAuthoredEmailPrefix(currentHtml, baselineHtml);
+  if (prefix !== null) {
+    return { html: prefix || undefined };
+  }
+
+  // CKEditor can use a leading empty paragraph as the first editable line of a reply.
+  // Match the rest of the original markup exactly if typing replaced that placeholder.
+  const placeholderLength = getEmailPlaceholderLength(baselineHtml);
+  if (placeholderLength) {
+    const html = deriveAuthoredEmailPrefix(currentHtml, baselineHtml.slice(placeholderLength));
+    if (html) {
+      return { html, replacesPlaceholder: true };
+    }
+  }
+
+  return {};
+}
+
+function getEmailPlaceholderLength(html) {
+  const match = html.match(/^\s*(?:<(p|div)\b[^>]*>(?:\s|&nbsp;)*(?:<br\b[^>]*>(?:\s|&nbsp;)*)?<\/\1>|<br\b[^>]*>)/i);
+  return match ? match[0].length : 0;
+}
+
+async function persistDraft(element, meta, snapshot) {
   const { value, html } = snapshot;
-  const meta = scheduledMeta || getDraftMetadata(element);
   if (isEmailEditorElement(element)) {
     debugLog("persistDraft called for email element", {
-      valueLength: value.length,
-      hasMeta: Boolean(meta)
+      valueLength: value.length
     });
-  }
-  if (!meta) {
-    return;
   }
 
   if (snapshot.valid === false) {
@@ -1067,7 +1176,7 @@ async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = n
     return;
   }
 
-  if (!value.trim()) {
+  if (!hasDraftContent(snapshot)) {
     await clearDraftKeys([meta.storageKey]);
     return;
   }
@@ -1075,6 +1184,8 @@ async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = n
   const draft = {
     value,
     html,
+    baseUrl: snapshot.baseUrl,
+    whiteSpace: snapshot.whiteSpace,
     updatedAt: Date.now(),
     url: snapshot.url,
     title: snapshot.title,
@@ -1086,27 +1197,35 @@ async function persistDraft(element, scheduledMeta = null, scheduledSnapshot = n
   };
   if (snapshot.emailContextKey) {
     draft.emailContextKey = snapshot.emailContextKey;
+    if (snapshot.replacesEmailPlaceholder) {
+      draft.replacesEmailPlaceholder = true;
+    }
   }
 
-  draftCache.set(meta.storageKey, draft);
   const liveMeta = getDraftMetadata(element);
   if (liveMeta && liveMeta.storageKey === meta.storageKey) {
     trackDraftEditor(element, meta);
     editorDraftOwnership.set(element, meta.storageKey);
   }
   const mutationGeneration = getDraftGeneration(meta.storageKey);
-  await queueDraftStorageOperation(meta.storageKey, () => {
+  const stored = await queueDraftStorageOperation(meta.storageKey, async () => {
+    if (snapshot.blobImageSnapshot) {
+      draft.html = await snapshot.blobImageSnapshot;
+    }
     if (
       clearedDraftKeys.has(meta.storageKey) ||
-      getDraftGeneration(meta.storageKey) !== mutationGeneration
+      getDraftGeneration(meta.storageKey) !== mutationGeneration ||
+      !hasDraftContent(draft)
     ) {
       return;
     }
-    return setDraftValue(meta.storageKey, draft);
+    const saved = await setDraftValue(meta.storageKey, draft);
+    if (saved && getDraftGeneration(meta.storageKey) === mutationGeneration) {
+      draftCache.set(meta.storageKey, draft);
+      return true;
+    }
   });
-  if (getDraftGeneration(meta.storageKey) === mutationGeneration) {
-    clearedDraftKeys.delete(meta.storageKey);
-  }
+  if (!stored) return;
   if (isEmailEditorElement(element)) {
     debugLog("email draft saved", {
       storageKey: meta.storageKey,
@@ -1161,11 +1280,11 @@ function scanAndRestore(root) {
   const candidates = collectDraftEditors(root);
 
   if (queryRoot) {
-    if (isIframeElement(queryRoot) && queryRoot.matches("iframe.cke_wysiwyg_frame[title='Email Body']")) {
+    if (isIframeElement(queryRoot) && queryRoot.matches(EMAIL_FRAME_SELECTOR)) {
       attachEmailFrameObserver(queryRoot);
     }
 
-    queryRoot.querySelectorAll("iframe.cke_wysiwyg_frame[title='Email Body']").forEach((frame) => {
+    queryRoot.querySelectorAll(EMAIL_FRAME_SELECTOR).forEach((frame) => {
       attachEmailFrameObserver(frame);
     });
   }
@@ -1222,18 +1341,41 @@ async function restoreDraft(element) {
     return;
   }
 
-  const currentValue = readElementValue(element);
-
   let draft = draftCache.get(meta.storageKey);
   if (!draft) {
+    const generation = getDraftGeneration(meta.storageKey);
+    trackDraftEditor(element, meta);
     const result = await getDraftValue(meta.storageKey);
-    draft = result[meta.storageKey];
+    const liveMeta = getDraftMetadata(element);
+    if (
+      liveMeta?.storageKey !== meta.storageKey ||
+      liveMeta.recordId !== meta.recordId ||
+      getDraftGeneration(meta.storageKey) !== generation ||
+      clearedDraftKeys.has(meta.storageKey) ||
+      restoredDraftKeys.get(element) === meta.storageKey
+    ) {
+      return;
+    }
+
+    draft = draftCache.get(meta.storageKey) || result[meta.storageKey];
     if (draft) {
       draftCache.set(meta.storageKey, draft);
     }
   }
 
-  if (!draft || !draft.value) {
+  if (
+    element.isConnected === false ||
+    submittedEditors.has(element) ||
+    saveTimers.get(element)?.meta.storageKey === meta.storageKey ||
+    (emailState && (
+      emailDraftStates.get(element) !== emailState || !emailState.readyForRestore || emailState.editStarted ||
+      emailState.richInsert?.expiresAt > Date.now()
+    ))
+  ) {
+    return;
+  }
+
+  if (!draft || !hasDraftContent(draft)) {
     // No draft yet (storage may still be warming up); leave the element un-marked so a
     // later scan can retry once a draft exists.
     if (isEmailEditorElement(element)) {
@@ -1262,17 +1404,17 @@ async function restoreDraft(element) {
     // A Case can expose Reply/Reply All composers for different EmailMessage records. The
     // quoted-history fingerprint ensures a draft for one reply target never enters another,
     // even though both composers belong to the same Case.
-    restoredDraftKeys.set(element, meta.storageKey);
-    clearDraftKeys([meta.storageKey]).catch((error) => {
-      console.error("Salesforce Draft Guard failed to discard an Email-context mismatch.", error);
-    });
     return;
   }
 
+  const currentValue = readElementValue(element);
   const restoreComparisonValue = emailState
     ? deriveAuthoredEmailPrefix(currentValue, emailState.baselineValue)
     : currentValue;
-  if (restoreComparisonValue === null || !shouldRestoreOverCurrentValue(restoreComparisonValue)) {
+  const currentHtml = readElementHtml(element) || "";
+  const authoredHtml = emailState ? getEmailHtmlPrefix(currentHtml, emailState.baselineHtml).html : currentHtml;
+  if (restoreComparisonValue === null || !shouldRestoreOverCurrentValue(restoreComparisonValue) ||
+    hasInlineImage(authoredHtml) || hasHyperlink(authoredHtml)) {
     // The field already has content; never overwrite it. Mark handled so we don't keep
     // re-checking and never fight the user's edits.
     restoredDraftKeys.set(element, meta.storageKey);
@@ -1334,17 +1476,22 @@ async function clearDraftKeys(storageKeys) {
 }
 
 function markDraftKeysCleared(storageKeys) {
-  storageKeys.forEach((key) => {
+  const keys = new Set(storageKeys);
+  keys.forEach((key) => {
     draftCache.delete(key);
     toastedFieldKeys.delete(key);
     clearedDraftKeys.add(key);
     draftGenerations.set(key, getDraftGeneration(key) + 1);
   });
-  for (const [element, meta] of trackedEditors.entries()) {
-    if (!storageKeys.includes(meta.storageKey)) {
+  for (const [element, { meta }] of saveTimers) {
+    if (keys.has(meta.storageKey)) {
+      cancelScheduledSave(element);
+    }
+  }
+  for (const [element, meta] of trackedEditors) {
+    if (!keys.has(meta.storageKey)) {
       continue;
     }
-    cancelScheduledSave(element);
     clearedEditorReadyKeys.delete(element);
     const toastState = toastStateByElement.get(element);
     if (toastState) {
@@ -1839,11 +1986,15 @@ function readElementValue(element) {
 function readElementHtml(element) {
   // Capture the editor's own markup for rich surfaces (Post/Email) so bold/italic/links and
   // exact line breaks survive a restore. Plain text inputs have no meaningful HTML.
-  if (isEditableElement(element) && typeof element.innerHTML === "string") {
+  if (typeof element.innerHTML === "string" && isEditableElement(element)) {
     return element.innerHTML || undefined;
   }
 
   return undefined;
+}
+
+function readEditorWhiteSpace(element) {
+  return element.ownerDocument?.defaultView?.getComputedStyle(element).whiteSpace;
 }
 
 function writeElementValueGuarded(element, draft) {
@@ -1851,18 +2002,24 @@ function writeElementValueGuarded(element, draft) {
   // write, the synthetic input, and the editor's own follow-up mutations are all suppressed.
   restoringNow.add(element);
 
-  // Rich contenteditable editors (Quill for Post, CKEditor for Email) ignore a direct
-  // innerHTML write — they reconcile against their own model and drop foreign markup, which
-  // is why formatting and line breaks were lost. Insert through a synthetic paste so the
-  // editor's clipboard pipeline converts the HTML into its model with formatting intact.
-  if (isEditableElement(element) && !isTextInputElement(element)) {
+  const richEditor = isEditableElement(element) && !isTextInputElement(element);
+  if (richEditor && !draft?.html) {
     restoreEditableDraft(element, draft);
     return;
   }
 
   try {
-    writeElementValue(element, draft);
+    // Native editor markup already represents the saved document. Re-pasting it through
+    // clipboard matchers can reinterpret its spacing, list types, and code block structure.
+    if (richEditor && isEmailEditorElement(element)) {
+      writeEmailDraftBeforeExisting(element, draft);
+    } else {
+      writeElementValue(element, draft);
+    }
     dispatchSyntheticInput(element);
+    if (richEditor) {
+      resetRestoredEditorViewport(element);
+    }
   } catch (error) {
     debugWarn("restore write failed", error);
   }
@@ -2054,7 +2211,6 @@ function restoreFocusAfterDraftRestore(
 
 function insertViaPaste(element, ownerDocument, draft) {
   const view = ownerDocument.defaultView || window;
-  const html = draft && typeof draft === "object" ? draft.html : null;
   const text = getDraftText(draft);
 
   if (typeof element.focus !== "function" || typeof element.dispatchEvent !== "function") {
@@ -2087,13 +2243,6 @@ function insertViaPaste(element, ownerDocument, draft) {
     if (text) {
       dataTransfer.setData("text/plain", text);
     }
-    if (html) {
-      const pasteHtml = isEmailEditorElement(element)
-        ? normalizeEmailDraftHtml(html, ownerDocument)
-        : sanitizeDraftHtml(html, ownerDocument);
-      dataTransfer.setData("text/html", pasteHtml);
-    }
-
     const pasteEvent = new view.ClipboardEvent("paste", {
       bubbles: true,
       cancelable: true,
@@ -2109,11 +2258,22 @@ function insertViaPaste(element, ownerDocument, draft) {
 
 function writeEmailDraftBeforeExisting(element, draft) {
   const ownerDocument = element.ownerDocument || document;
+  if (draft?.html) {
+    const fragment = SfdgDraftHtml.createFragment(draft.html, ownerDocument, { baseUrl: draft.baseUrl });
+    if (fragment.hasChildNodes()) {
+      if (draft.replacesEmailPlaceholder && getEmailPlaceholderLength(element.innerHTML)) {
+        while (element.firstChild?.nodeType === 3 && !element.firstChild.textContent.trim()) {
+          element.firstChild.remove();
+        }
+        element.firstChild?.remove();
+      }
+      element.prepend(fragment);
+      return;
+    }
+  }
+
   const existingHtml = typeof element.innerHTML === "string" ? element.innerHTML : "";
-  const storedHtml = draft && typeof draft === "object" ? draft.html : "";
-  const authoredHtml = storedHtml
-    ? normalizeEmailDraftHtml(storedHtml, ownerDocument)
-    : escapeDraftTextForHtml(getDraftText(draft));
+  const authoredHtml = escapeDraftTextForHtml(getDraftText(draft));
   const separator = existingHtml && authoredHtml && !/<br\s*\/?>\s*$/i.test(authoredHtml)
     ? "<br>"
     : "";
@@ -2157,135 +2317,15 @@ function normalizeEditableValue(value) {
 
 function writeContentEditableValue(element, draft) {
   const ownerDocument = element.ownerDocument || document;
-  const html = draft && typeof draft === "object" ? draft.html : null;
-  const normalizedText = getDraftText(draft).replace(/\r\n?/g, "\n");
-
-  // When we captured the editor's HTML, restore it so formatting and exact line breaks come
-  // back. Setting innerHTML keeps Quill/CKEditor able to re-sync through their own
-  // MutationObservers, and the synthetic input dispatched by the caller nudges that sync.
-  if (html && typeof element.innerHTML === "string") {
-    try {
-      element.innerHTML = isEmailEditorElement(element)
-        ? normalizeEmailDraftHtml(html, ownerDocument)
-        : sanitizeDraftHtml(html, ownerDocument);
-      return;
-    } catch (error) {
-      debugWarn("html restore failed, falling back to plain text", error);
-    }
-  }
-
-  rebuildContentEditable(element, ownerDocument, normalizedText);
-}
-
-function sanitizeDraftHtml(html, ownerDocument) {
-  const doc = ownerDocument || document;
-  const template = doc.createElement("template");
-  template.innerHTML = String(html || "");
-  const root = template.content || template;
-
-  if (typeof root.querySelectorAll === "function") {
-    root.querySelectorAll("script, style, iframe, object, embed, link, meta, base").forEach((node) => {
-      node.remove();
-    });
-    root.querySelectorAll("*").forEach((node) => {
-      Array.from(node.attributes || []).forEach((attr) => {
-        const name = attr.name.toLowerCase();
-        const value = String(attr.value || "");
-        if (name.startsWith("on") || (/^(href|src|xlink:href)$/.test(name) && /^\s*javascript:/i.test(value))) {
-          node.removeAttribute(attr.name);
-        }
-      });
-    });
-  }
-
-  return template.innerHTML;
-}
-
-function normalizeEmailDraftHtml(html, ownerDocument) {
-  const sanitizedHtml = sanitizeDraftHtml(html, ownerDocument);
-  const template = ownerDocument.createElement("template");
-  template.innerHTML = sanitizedHtml;
-  const root = template.content || template;
-  const rawNodes = Array.from(root.childNodes || []);
-
-  if (!rawNodes.some(isEmailBlockElement)) {
-    return template.innerHTML;
-  }
-
-  // Pretty-printed whitespace around paragraph nodes is not user content. Leaving it in
-  // the line-unit stream would turn indentation/newlines in the saved HTML into extra lines.
-  const sourceNodes = rawNodes.filter(
-    (node) => node.nodeType !== 3 || Boolean(String(node.textContent || "").trim())
-  );
-
-  const lineUnits = collectEmailLineUnits(sourceNodes);
-  if (typeof root.replaceChildren !== "function") {
-    return template.innerHTML;
-  }
-
-  root.replaceChildren();
-  lineUnits.forEach((unit, index) => {
-    unit.forEach((node) => root.appendChild(node));
-    if (index < lineUnits.length - 1) {
-      root.appendChild(ownerDocument.createElement("br"));
-    }
-  });
-
-  return template.innerHTML;
-}
-
-function collectEmailLineUnits(nodes) {
-  const units = [];
-  let inlineNodes = [];
-
-  const flushInlineNodes = () => {
-    if (inlineNodes.length) {
-      units.push(inlineNodes);
-      inlineNodes = [];
-    }
-  };
-
-  nodes.forEach((node) => {
-    if (!isEmailBlockElement(node)) {
-      inlineNodes.push(node);
+  if (draft?.html) {
+    const fragment = SfdgDraftHtml.createFragment(draft.html, ownerDocument, { baseUrl: draft.baseUrl });
+    if (fragment.hasChildNodes()) {
+      element.replaceChildren(fragment);
       return;
     }
-
-    flushInlineNodes();
-    const childNodes = Array.from(node.childNodes || []);
-    const isEmptyBlock = childNodes.every(
-      (child) =>
-        (child.nodeType === 3 && !String(child.textContent || "").trim()) ||
-        (child.nodeType === 1 && child.tagName.toLowerCase() === "br")
-    );
-    const childUnits = isEmptyBlock ? [] : collectEmailLineUnits(childNodes);
-    units.push(...(childUnits.length ? childUnits : [[]]));
-  });
-
-  flushInlineNodes();
-  return units;
-}
-
-function isEmailBlockElement(node) {
-  if (!node || node.nodeType !== 1) {
-    return false;
   }
 
-  return [
-    "ADDRESS",
-    "ARTICLE",
-    "BLOCKQUOTE",
-    "DIV",
-    "H1",
-    "H2",
-    "H3",
-    "H4",
-    "H5",
-    "H6",
-    "HEADER",
-    "P",
-    "SECTION"
-  ].includes(node.tagName.toUpperCase());
+  rebuildContentEditable(element, ownerDocument, getDraftText(draft).replace(/\r\n?/g, "\n"));
 }
 
 function rebuildContentEditable(element, ownerDocument, normalizedValue) {
@@ -2303,7 +2343,21 @@ function rebuildContentEditable(element, ownerDocument, normalizedValue) {
 }
 
 function hasUserValue(element) {
-  return Boolean(readElementValue(element).trim());
+  if (readElementValue(element).trim()) return true;
+  const html = readElementHtml(element);
+  return hasInlineImage(html) || hasHyperlink(html);
+}
+
+function hasDraftContent(draft) {
+  return Boolean(draft.value?.trim() || hasInlineImage(draft.html) || hasHyperlink(draft.html));
+}
+
+function hasInlineImage(html) {
+  return /<img\b[^>]*\ssrc="[^"]+"/i.test(html || "");
+}
+
+function hasHyperlink(html) {
+  return /<a\b[^>]*\shref="[^"]+"/i.test(html || "");
 }
 
 function isDraftCandidate(element) {
@@ -2388,13 +2442,21 @@ function ensureDraftObserver(element) {
     // A rich-text editor can mutate its DOM as Salesforce rerenders, switches publisher
     // tabs, or submits another composer. Do not let those untrusted lifecycle mutations
     // delete an otherwise recoverable draft when the editor is temporarily empty.
-    scheduleSave(element, "mutation", false);
+    const richInsert = mutations.some((mutation) => mutation.type === "attributes"
+      ? mutation.target.matches("img, a")
+      : Array.from(mutation.addedNodes).some((node) =>
+        node.matches?.("img, a") || node.querySelector?.("img, a")
+      ));
+    if (richInsert || mutations.some((mutation) => mutation.type !== "attributes")) {
+      scheduleSave(element, richInsert ? "rich-insert-mutation" : "mutation", false);
+    }
   });
 
   observer.observe(element, {
     childList: true,
     subtree: true,
-    characterData: true
+    characterData: true,
+    attributeFilter: ["src", "href", "width", "height", "alt", "title", "style"]
   });
 
   observedEditors.add(element);
@@ -2452,9 +2514,12 @@ function attachEmailFrameObserver(frame) {
     ensureDraftObserver(editorBody);
     frameDocument.addEventListener("input", handleInputEvent, true);
     frameDocument.addEventListener("beforeinput", handleInputEvent, true);
+    frameDocument.addEventListener("change", handleInputEvent, true);
     frameDocument.addEventListener("keyup", handleInputEvent, true);
     frameDocument.addEventListener("paste", handleInputEvent, true);
+    frameDocument.addEventListener("drop", handleInputEvent, true);
     frameDocument.addEventListener("blur", handleInputEvent, true);
+    frameDocument.addEventListener("focusin", handleFocusEvent, true);
     restoreDraft(editorBody).catch((error) => {
       console.error("Salesforce Draft Guard failed to restore an Email draft.", error);
     });
@@ -2596,12 +2661,10 @@ async function getDraftValue(key) {
     return {};
   }
 
+  let sessionResult;
   if (sessionStorageArea) {
     try {
-      const result = await sessionStorageArea.get(key);
-      if (result && key in result) {
-        return result;
-      }
+      sessionResult = await sessionStorageArea.get(key);
     } catch (error) {
       if (markStorageUnavailable(error, "session read")) {
         return {};
@@ -2611,28 +2674,35 @@ async function getDraftValue(key) {
   }
 
   try {
-    return await localStorageArea.get(key);
+    const localResult = await localStorageArea.get(key);
+    // Large inline drafts can fall back to local storage after an earlier save in session.
+    if (sessionResult?.[key] && (!localResult?.[key] ||
+      (sessionResult[key].updatedAt || 0) > (localResult[key].updatedAt || 0))) {
+      return sessionResult;
+    }
+    return localResult;
   } catch (error) {
     if (markStorageUnavailable(error, "local read")) {
       return {};
     }
+    if (sessionResult?.[key]) return sessionResult;
     throw error;
   }
 }
 
 async function setDraftValue(key, value) {
   if (storageUnavailableDueToContext) {
-    return;
+    return false;
   }
 
   if (sessionStorageArea) {
     try {
       await sessionStorageArea.set({ [key]: value });
       debugLog("setDraftValue wrote to session", { key });
-      return;
+      return true;
     } catch (error) {
       if (markStorageUnavailable(error, "session write")) {
-        return;
+        return false;
       }
       debugWarn("session storage write failed, falling back to local", error);
     }
@@ -2641,9 +2711,10 @@ async function setDraftValue(key, value) {
   try {
     await localStorageArea.set({ [key]: value });
     debugLog("setDraftValue wrote to local", { key });
+    return true;
   } catch (error) {
     if (markStorageUnavailable(error, "local write")) {
-      return;
+      return false;
     }
     throw error;
   }
@@ -2700,6 +2771,7 @@ function normalizeSettings(stored) {
   return {
     protectedActions: normalizeList(stored.protectedActions, DEFAULT_SETTINGS.protectedActions),
     fieldKeywords: normalizeList(stored.fieldKeywords, DEFAULT_SETTINGS.fieldKeywords),
+    confirmBeforeRefresh: stored.confirmBeforeRefresh !== false,
     showToasts: stored.showToasts !== false,
     toastPosition: normalizeChoice(stored.toastPosition, TOAST_POSITIONS, DEFAULT_SETTINGS.toastPosition),
     toastSize: normalizeChoice(stored.toastSize, TOAST_SIZES, DEFAULT_SETTINGS.toastSize),
